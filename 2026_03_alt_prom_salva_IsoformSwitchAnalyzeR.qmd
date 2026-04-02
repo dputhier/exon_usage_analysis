@@ -38,7 +38,13 @@ We can keep in mind that we can do three levels of analysis based on RNA-Seq dat
 <div class="alert alert-success" role="alert">
 In the context of `IsoformSwitchAnalyzeR` and the Brignall dataset, we will focus on the DTU analysis which is the main focus of the package. The DGE and DTE analyses can be performed using other packages (such as DESeq2).
 
-One of the most used ways of descripting isoform usage is as Isoform Fractions (IF). These are simply values describing how large a fraction of  the expression of a given gene originate from a given isoform. So the Isoform Fraction of isoform x for gene g ($IF_{x,g}$) is given by as: $IF_{x,g} = IsoExp_{x,g} / GeneExp_{g}$. Note that the parent gene expression is the sum of the expression of all the associated isoforms. The difference between two conditions, condition 1 and 2, is then given by $dIF_{x,g} = IF_{x,g,condition1} - IF_{x,g,condition2}$.
+One of the most used ways of descripting isoform usage is as Isoform Fractions (IF). These are simply values describing how large a fraction of  the expression of a given gene originate from a given isoform. So the Isoform Fraction of isoform x for gene g ($IF_{x,g}$) is given by : 
+
+$$IF_{x,g} = IsoExp_{x,g} / GeneExp_{g}$$
+
+Note that the parent gene expression is the sum of the expression of all the associated isoforms. The difference between two conditions, condition 1 and 2, is then given by :
+
+$$dIF_{x,g} = IF_{x,g,condition1} - IF_{x,g,condition2}$$
 
 There are several methods that will use these dIF values to test for significant changes in isoform usage:  DEXSeq, Double-ExpSeq, DRIMSeq, Limma diffsplice, edgeR diffsplice, NBSplice or BANDITS. Here we will use DEXSeq.
 
@@ -196,12 +202,13 @@ tx_size <- setNames(tx_size$size, tx_size$transcript_id)
 
 To compute RPKM, we need to divide the normalized counts by the size of the transcript in kilobases and the total number of reads in millions. We will compute the total number of reads for each sample and then compute the RPKM for each transcript. The formula used for RPKM here is.
 
-RPKM_i = (C_i * 10^9) / (N * L_i)
+$$RPKM_{i} = (C_{i} * 10^9) / (N * L_{i})$$
 
 Where:
-- C_i = Number of reads mapped to the ith gene
-- N = Total number of mapped reads in the experiment
-- L_i = Length of the ith gene in base pairs
+
+- $C_{i} = \textrm{Number of reads mapped to the ith gene}$
+- $N = \textrm{Total number of mapped reads in the experiment}$
+- $L_{i} = \textrm{Length of the ith gene in base pairs}$
 
 ```{r rpkm}
 total_reads <- colSums(tx_counts)
@@ -230,10 +237,11 @@ ggplot(melted_rpkm, aes(x=log10(rpkm), fill=sample_id)) +
 
 As indicated in the documentation of `IsoformSwitchAnalyzeR`, the `switchAnalyzeRlist` object can be created using the `importRdata()` function. This function takes as input:
 
--   **The normalized transcript counts** (isoformCountMatrix)
--   **Optional but highly recommended**: A data.frame with unfiltered normalized independent biological (aka not technical) replicate isoform expression. Ideal for supplying quantification measured in Transcripts Per Million (TxPM) or RPKM/FPKM.
+- **The normalized transcript counts** (isoformCountMatrix)
+- **Optional but highly recommended**: A data.frame with unfiltered normalized independent biological (aka not technical) replicate isoform expression. Ideal for supplying quantification measured in Transcripts Per Million (TxPM) or RPKM/FPKM.
+- **A GTF file**.
 
-```{r creatinglist}
+```{r creatinglist, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
 tx_norm <- as.data.frame(tx_norm)
 tx_norm$isoform_id <- rownames(tx_norm)
 colnames(tx_norm) <- gsub("_norm_tx$", "", 
@@ -264,8 +272,7 @@ aSwitchList <- importRdata(
     foldChangePseudoCount=1,
     isoformExonAnnoation = file.path(wdir,
                                      "data/Homo_sapiens.GRCh38.115.chr_tx_subset.gtf.gz"),
-    ignoreAfterPeriod = TRUE, 
-    onlyConsiderFullORF = TRUE
+    ignoreAfterPeriod = TRUE
 )
 ```
 
@@ -377,7 +384,7 @@ DT::datatable(aSwitchList_dex$isoformSwitchAnalysis,
 Since all the data about isoform and gene expression is saved in the switchAnalyzeRlist, we can also start building custom plots:
 
 ```{r plotdexsummary2}
-ggplot(data=aSwitchList_dex_f$isoformFeatures, aes(x=dIF,
+ggplot(data=aSwitchList_dex$isoformFeatures, aes(x=dIF,
                                                    y=-log10(isoform_switch_q_value))) +
      geom_point(
         aes( color=abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 40), # default cutoff
@@ -385,11 +392,11 @@ ggplot(data=aSwitchList_dex_f$isoformFeatures, aes(x=dIF,
     ) +
     geom_hline(yintercept = -log10(0.05), linetype='dashed') + # default cutoff
     geom_vline(xintercept = c(-0.1, 0.1), linetype='dashed') + # default cutoff
-    scale_color_manual('Signficant\nIsoform Switch', values = c('black','red')) +
+    scale_color_manual('abs(dIF) > 0.05 &\n -log10(isoform_switch_q_value) > 40', values = c('black','red')) +
     labs(x='dIF', y='-Log10 ( Isoform Switch Q Value )') +
     theme_bw() +
   ggrepel::geom_label_repel(
-    data = subset(aSwitchList_dex_f$isoformFeatures, -log10(isoform_switch_q_value) > 40 & abs(dIF) > 0.05), 
+    data = subset(aSwitchList_dex$isoformFeatures, -log10(isoform_switch_q_value) > 40 & abs(dIF) > 0.05), 
     aes(label = gene_id),
     size = 2,
     box.padding = 0.3,
@@ -403,7 +410,7 @@ ggplot(data=aSwitchList_dex_f$isoformFeatures, aes(x=dIF,
 Another interesting overview plot can be made as follows. It tend to indicate that there is no clear relationship between the gene log2 fold change and the dIF. 
 
 ```{r plotdexsummary3}
-ggplot(data=aSwitchList_dex_f$isoformFeatures,
+ggplot(data=aSwitchList_dex$isoformFeatures,
        aes(x=gene_log2_fold_change, 
            y=dIF)) +
     geom_point(
@@ -412,11 +419,11 @@ ggplot(data=aSwitchList_dex_f$isoformFeatures,
     ) + 
     geom_hline(yintercept = 0, linetype='dashed') +
     geom_vline(xintercept = 0, linetype='dashed') +
-    scale_color_manual('Signficant\nIsoform Switch', values = c('black','red')) +
+    scale_color_manual('abs(dIF) > 0.05 &\n -log10(isoform_switch_q_value) > 40', values = c('black','red')) +
     labs(x='Gene log2 fold change', y='dIF') +
     theme_bw() +
     ggrepel::geom_label_repel(
-    data = subset(aSwitchList_dex_f$isoformFeatures, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 40), 
+    data = subset(aSwitchList_dex$isoformFeatures, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 40), 
     aes(label = gene_id),
     size = 2,
     box.padding = 0.3,
@@ -425,6 +432,31 @@ ggplot(data=aSwitchList_dex_f$isoformFeatures,
     max.overlaps = 20
   ) 
 ```
+
+We can also represent the results this way:
+
+```{r}
+ggplot(data=aSwitchList_dex$isoformFeatures,
+       aes(y=-log10(isoform_switch_q_value), 
+           x=rank(isoform_switch_q_value))) +
+    geom_point(
+        aes(color=abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 40 ), 
+        size=1
+    ) + 
+    scale_color_manual('abs(dIF) > 0.05 &\n -log10(isoform_switch_q_value) > 40', values = c('black','red')) +
+    labs(x='Rank(isoform_switch_q_value)', y='-log10(isoform_switch_q_value)') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+    data = subset(aSwitchList_dex$isoformFeatures, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 40), 
+    aes(label = gene_id),
+    size = 2,
+    box.padding = 0.3,
+    point.padding = 0.5,
+    segment.color = 'grey50',
+    max.overlaps = 20
+  ) 
+```
+
 
 # Annotate alternative splicing events (SE, A5, A3, IR, MX, etc.)
 
@@ -447,7 +479,7 @@ This function will return a data.frame with the number of switches that are asso
 
 - **ATTS: Alternative Transcription Termination Sites**. Compared to the hypothetical pre-RNA an alternative transcription Termination sites was used. Since it is compared to the pre-RNA, the ATTS site used is per definition more upstream than the the pre-RNA.
 
-```{r analyzeAlternativeSplicing}
+```{r analyzeAlternativeSplicing, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
 aSwitchList_dex_ann <- analyzeAlternativeSplicing(aSwitchList_dex,
                                                   onlySwitchingGenes=TRUE,
                                                   alpha=0.05,
@@ -536,7 +568,7 @@ The objective here is to analyze the pfam domains that are present in the isofor
 
 Below is the code to run pfam_scan.pl on the extracted sequences. Note that you need to have the pfam_scan.pl script and the pfam database downloaded and unzipped in the specified directory. The pfam_scan.pl script can be downloaded from the pfam website and the pfam database can be downloaded from the pfam website as well. The pfam_scan.pl script requires perl to be installed on your system.
 
-```{bash}
+```{bash pfam}
 # wget https://ftp.ebi.ac.uk/pub/databases/Pfam/releases/Pfam38.2/Pfam-A.hmm.gz
 # gunzip Pfam-A.hmm.gz
 # wget https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.dat.gz
@@ -552,7 +584,7 @@ Below is the code to run pfam_scan.pl on the extracted sequences. Note that you 
 
 ```
 
-```{r analyzepfam}
+```{r analyzepfam, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
 aSwitchList_dex_ann_seq_pfam <- IsoformSwitchAnalyzeR::analyzePFAM(
     aSwitchList_dex_ann_seq,
     pathToPFAMresultFile = file.path(wdir, "output/pfam/isoformSwitchAnalyzeR_isoform_AA_pfam_scanresults_modif.txt"),
@@ -644,7 +676,7 @@ The arguments passed to consequencesToAnalyze must be a combination of:
 
 - **intracellular_region_length** : Test differences in total length of intracellular regions. Requires that analyzeDeepTMHMM have been used to add external topology analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF. The length difference, measured in AA, must be larger than AaCutoff and AaFracCutoff
 
-```{r predictconsequences}
+```{r predictconsequences, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
 coi <- c('tss', 'tts', 'intron_retention', 
          'ORF_seq_similarity', 
          'NMD_status',
@@ -697,11 +729,11 @@ top_15 <- extractTopSwitches(
 
 ```{r plotTopSwitches}
 for(i in top_15$gene_id){
-    print(switchPlot(
+    switchPlot(
         aSwitchList_dex_ann_seq_pfam_pred,
         gene = i,
         plotTopology=FALSE
-    ))
+    )
 }
 
 # switchPlotGeneExp(
