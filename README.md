@@ -2,6 +2,14 @@
 
 ## Various analysis versions
 
+### Isoform usage with IsoformSwitchAnalyzeR BioC package
+
+This analysis can be found in isoform_switch_analyzeR branch.
+Open the report/index.html file.
+
+
+
+
 ### Simple tx ratio vs Gene ratio
 
 This analysis can be found in tx_ratio_vs_gene_ratio branch.
@@ -16,6 +24,3 @@ $$S_i = \log_2\!\left(\frac{t_{i,b} + 1}{t_{i,a} + 1} \cdot \frac{g_a + 1}{g_b +
 A pseudocount of 1 is added to all terms to handle zero counts. $S_i > 0$ indicates that transcript $t_i$ is proportionally more induced in condition $b$ than the overall gene, while $S_i <
 0$ indicates it is proportionally more repressed. Transcripts with the highest $|S_i|$ are nominated as candidates for a transcript usage switch.
 
-### Isoform usage with IsoformSwitchAnalyzeR
-
-This analysis can be found in isoform_switch_analyzeR branch.

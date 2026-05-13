@@ -1,0 +1,1160 @@
+---
+title: "Genreport report"
+author: "Denis Puthier"
+date: '`r Sys.Date()`'
+output:
+  rmdformats::html_clean:
+    highlight: kate
+    fig_width: 11
+    fig_height: 6
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+  html_document:
+    fig_caption: yes
+    toc: no
+    toc_depth: 3
+
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r start, include=FALSE, echo=FALSE, eval=TRUE}
+
+dir.create("cache", recursive = TRUE, showWarnings = FALSE)
+dir.create("figures", recursive = TRUE, showWarnings = FALSE)
+dir.create("../output", recursive = TRUE, showWarnings = FALSE)
+
+options(width=400)
+
+knitr::opts_chunk$set(
+  fig.path="./figures/",
+  fig.align = "center", 
+  size = "tiny", 
+  fig.dpi=300,
+  out.width="100%",
+  warning = FALSE,
+  message = FALSE,
+  echo = FALSE,
+  results = "asis",
+  fig.width = 11,
+  fig.height = 6,
+  cache.rebuild = FALSE,
+  cache.comments=FALSE,
+  cache=TRUE,
+  cache.path = "./cache/cache"
+)
+```
+
+For this analysis, we will use the `IsoformSwitchAnalyzeR` library to analyze the differential transcript usage (DTU). The original article describing `IsoformSwitchAnalyzeR` can be found [in here](https://academic.oup.com/bioinformatics/article/35/21/4469/5466456). The method had been described in a previous article entitled [The Landscape of Isoform Switches in Human Cancers](https://pubmed.ncbi.nlm.nih.gov/28584021/).
+
+The `IsoformSwitchAnalyzeR` package is part of Bioconductor. This package seems to evolve a lot. Here I'm using version 3.22 of Bioconductor to ensure that we benefit from the latest developements of `IsoformSwitchAnalyzeR`.
+
+```{r BiocManager, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+BiocManager::version() 
+```
+
+-   For **optimal results** the `importRdata()` function expects a table with TPM or R/FPKM counts at the transcript level (not the gene level). We will thus compute RPKM counts based on transcript length later on.
+
+-   **Note that the package documentation is sometimes confusing**. Some filters that are applied are sometimes not clearly explained in the documentation nor documented at all...
+
+We can keep in mind that we can do several levels of analysis based on RNA-Seq data:
+
+- **DGE** asks: is this gene more or less expressed overall?
+- **DTE** asks: is this specific transcript more or less expressed?
+- **DTU** asks: irrespective of the overall expression of a gene, is the fraction of a particular transcript changing? This is the main focus of `IsoformSwitchAnalyzeR`.
+- **Switch analysis** asks: Are there cases where the decrease or increase of a transcript is compensated by an increase or decrease of another transcript from the same gene? This is also an important feature of `IsoformSwitchAnalyzeR`.
+
+The DTU and switch pipeline can be complemented with an analysis of the functional consequences of the isoform switches. This is also an important feature of `IsoformSwitchAnalyzeR`. It allows to predict the functional consequences of the isoform switches based on the changes in the protein domains
+
+::: {.alert .alert-success role="alert"}
+In the context of `IsoformSwitchAnalyzeR` and the Brignall dataset, we will focus on the DTU analysis which is the main focus of the package. The DGE and DTE analyses can be performed using other packages (such as DESeq2).
+
+One of the most used ways of descripting isoform usage is as Isoform Fractions (IF). These are simply values describing how large a fraction of the expression of a given gene originate from a given isoform. So the Isoform Fraction of isoform x for gene g ($IF_{x,g}$) is given by :
+
+$$IF_{x,g} = IsoExp_{x,g} / GeneExp_{g}$$
+
+Note that the parent gene expression is the sum of the expression of all the associated isoforms. The difference between two conditions, condition 1 and 2, is then given by :
+
+$$dIF_{x,g} = IF_{x,g,condition1} - IF_{x,g,condition2}$$
+
+There are several methods that will use these dIF values to test for significant changes in isoform usage: DEXSeq, Double-ExpSeq, DRIMSeq, Limma diffsplice, edgeR diffsplice, NBSplice or BANDITS. Here we will use DEXSeq.
+
+Here we will use `DEXSeq` to perform the DTU analysis. The `isoformSwitchTestDEXSeq()` function in `IsoformSwitchAnalyzeR` is a wrapper around the `DEXSeq` package that allows us to perform the DTU analysis using DEXSeq.
+:::
+
+# Loading libraries
+
+```{r loadlibs, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+library(ggplot2)
+library(DESeq2)
+library(dplyr)
+library(dbplyr)
+library(ggrepel)
+library(reshape2)
+library(Seurat)
+library(rtracklayer)
+library(IsoformSwitchAnalyzeR)
+library(BSgenome.Hsapiens.UCSC.hg38)
+library(UpSetR)
+library(ggsci)
+library(DT)
+library(sessioninfo)
+library(data.table)
+```
+
+# Merging GSE285832 and GSE90718
+
+The GSE90718 dataset contains condition: Jurkat-Iono, Jurkat-NS, Jurkat-PMA, Jurkat-TNF. There are **THREE REPLICATES** per condition:
+
+```{r head_file_GSE90718_info}
+cmd <- "head -n 1 ../data/RNA_Brignall_GSE90718_transcripts_counts.csv | perl -npe 's/,/\\n/g'| grep Jurkat-"
+system(cmd)
+```
+
+The GSE285832 file contains **TWO REPLICATES** per condition... 
+
+```{r head_file_GSE285832_info}
+cmd <- "head -n 1 ../data/RNA_Wang_GSE285832_transcripts_counts.csv | perl -npe 's/,/\\n/g'| grep Jurkat"
+system(cmd)
+```
+
+<div class="alert alert-danger" role="alert">
+This means that **the power of the analyses for the two datasets wont be the same**... We may select only two samples GSE90718 per condition to have the same number of replicates as GSE285832 but this will reduce the power of the analysis. We will thus keep all the samples from GSE90718 and just be aware that the power of the analysis is not the same for all conditions.
+</div>
+
+
+## Loading GSE90718
+
+Here we load the transcript count table from experiment **GSE90718**. The transcript counts are provided as a comma-separated file. We also set the working directory to the location of the data files.
+
+```{r loadingdata_GSE90718, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+
+tx_raw_GSE90718 <- read.table("../data/RNA_Brignall_GSE90718_transcripts_counts.csv", 
+                     sep=",", 
+                     head=TRUE, 
+                     row.names = 9)
+
+```
+
+The number of genes for experiment **GSE90718** is `r length(unique(tx_raw_GSE90718$gene_id))`. The number of transcripts for experiment **GSE90718** is : `r nrow(tx_raw_GSE90718)`.
+
+## Loading  GSE285832
+
+Here we load the transcript count table from experiment **GSE90718**. The transcript counts are provided as a comma-separated file. We also set the working directory to the location of the data files.
+
+```{r loadingdata_GSE285832, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+
+tx_raw_GSE285832 <- read.table("../data/RNA_Wang_GSE285832_transcripts_counts.csv", 
+                     sep=",", 
+                     head=TRUE, 
+                     row.names = 9)
+
+```
+
+The number of genes for experiment **GSE285832** is `r length(unique(tx_raw_GSE285832$gene_id))`. The number of transcripts for experiment **GSE90718** is : `r nrow(tx_raw_GSE285832)`.
+
+## Merge the two datasets
+
+```{r merging_both, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+tx_nr <- intersect(rownames(tx_raw_GSE90718), rownames(tx_raw_GSE285832))
+tx_raw <- cbind(tx_raw_GSE90718[tx_nr, ], 
+                tx_raw_GSE285832[tx_nr, 
+                                 grep("Jurkat", 
+                                      colnames(tx_raw_GSE285832))])
+
+colnames(tx_raw) <- gsub("JurkatStim_RNA", "Jurkat.CD3andCD28", colnames(tx_raw))
+colnames(tx_raw) <- gsub("Jurkat_RNA_R", "Jurkat.Cont_RNA_R", colnames(tx_raw))
+colnames(tx_raw) <- gsub("PMA_Iono", "PMAandIono", colnames(tx_raw)) 
+colnames(tx_raw) <- gsub("\\.Iono_RNA", ".IonoAlone", colnames(tx_raw))
+colnames(tx_raw) <- gsub("\\.PMA_RNA", ".PMAAlone_RNA", colnames(tx_raw))
+colnames(tx_raw) <- gsub("\\.TNF_RNA", ".TNFAlone_RNA", colnames(tx_raw))
+
+colnames(tx_raw) <- gsub("_RNA", "", colnames(tx_raw))
+colnames(tx_raw) <- gsub("Jurkat.", "", colnames(tx_raw))
+```
+
+# Extract the transcript counts from the transcript table
+
+We next want to compute a normalized expression matrix for both the gene counts and the transcript counts. We thus need to create a dedicated matrix.
+
+```{r tx_info, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+# Tx counts
+tx_counts <- tx_raw[, grep("GSM", colnames(tx_raw))]
+```
+
+# Rounding tx counts
+
+Transcript counts are not integer. This is a problem for later normalization with DESeq2 as it expects integer counts for normalization. We will round the counts to the nearest integer.
+
+```{r rounding, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+tx_counts  <- round(tx_counts, 0)
+```
+
+
+
+# Compare GTF with tx list
+
+The GTF file used here does not contain the same set of transcripts as the tx table. This is likely due to the fact that the GTF file is from a different version of the annotation than the one used to generate the tx table. We will subset later both so that they point to the same transcroipt
+
+```{r readgtf, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../data/Homo_sapiens.GRCh38.115.chr.base_attr.txt.gz")){
+   gtf <- rtracklayer::readGFF("../data/Homo_sapiens.GRCh38.115.chr.gtf.gz")
+  to_del <- "(gene_source)|(transcript_version)|(transcript_source)|(tag)|(transcript_support_level)|(exon_id)|(exon_version)|(protein_id)|(protein_version)|(ccds_id)"
+  gtf <- gtf[-grep(to_del, colnames(gtf), perl = TRUE)] 
+  write.table(gtf,
+              file="../data/Homo_sapiens.GRCh38.115.chr.base_attr.txt",
+              sep="\t", 
+              quote=FALSE, 
+              row.names=FALSE, 
+              col.names=TRUE)
+  cmd <- "gzip -f ../data/Homo_sapiens.GRCh38.115.chr.base_attr.txt"
+  system(cmd)
+  
+}else{
+  gtf <-as.data.frame(data.table::fread("../data/Homo_sapiens.GRCh38.115.chr.base_attr.txt.gz", 
+               sep = "\t",
+               header = TRUE,
+               quote = "",
+               comment.char = "#"))
+}
+
+```
+
+The input gtf contains `r length(unique(gtf$transcript_id))` transcript_id.
+
+Let's compare with the transcript_id from the count table:
+
+```{r intersect}
+universe <- union(unique(gtf$transcript_id), unique(tx_raw$tx_id))
+mat <- table(universe %in% unique(gtf$transcript_id), universe %in% unique(tx_raw$tx_id))
+rownames(mat) <- c("! gtf", "gtf")
+colnames(mat) <- c("! table", "table")
+DT::datatable(mat)
+```
+
+```{r fixintersect, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+itersect_tx_id <- intersect(unique(tx_raw$tx_id), unique(gtf$transcript_id))
+length(itersect_tx_id)
+tx_raw <- tx_raw[itersect_tx_id, ]
+gtf_sub <- gtf[gtf$transcript_id %in% itersect_tx_id, ]
+tx_counts <- tx_counts[itersect_tx_id, ]
+```
+
+```{r lengthtxid, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+length(unique(gtf_sub$transcript_id))
+```
+
+Now write this to the disk:
+
+```{r writegtf, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../output/Homo_sapiens.GRCh38.115.chr_tx_subset.gtf.gz")){
+  paste_att <- function(x, y){paste0(paste0(y, " \"", x, "\";", sep=""), 
+                                     collapse = " ")}
+  ext_att <- gtf_sub[, 9:ncol(gtf_sub)]
+  basic_att <- gtf_sub[, 1:8]
+  ext_att <- apply(ext_att, 1, paste_att, colnames(ext_att))
+  basic_att$ext_att <- ext_att
+  basic_att$score <- "."
+  basic_att$phase <- "."
+  write.table(basic_att, "../output/Homo_sapiens.GRCh38.115.chr_tx_subset.gtf", 
+              sep="\t", 
+              quote=FALSE, 
+              row.names=FALSE, 
+              col.names=FALSE)
+  
+  cmd <- "gzip -f ../output/Homo_sapiens.GRCh38.115.chr_tx_subset.gtf"
+  system(cmd)
+}
+```
+
+
+# Computing transcript size
+
+To compute RPKM, we need to compute the size of each transcript. The size of a transcript is the sum of the sizes of its exons. We will use the gtf file to compute the size of each transcript. We will subset the gtf file to keep only the exons and then group by transcript_id to compute the size of each transcript.
+
+```{r txsize, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+exons <- gtf_sub[gtf_sub$type == "exon", ]
+exons$size <- exons$end - exons$start + 1
+tx_size <- exons %>%
+  group_by(transcript_id) %>%
+  summarise(size = sum(size))
+tx_size <- setNames(tx_size$size, tx_size$transcript_id)
+```
+
+# Computing RPKM
+
+To compute RPKM, we need to divide the normalized counts by the size of the transcript in kilobases and the total number of reads in millions. We will compute the total number of reads for each sample and then compute the RPKM for each transcript. The formula used for RPKM here is.
+
+$$RPKM_{i} = (C_{i} * 10^9) / (N * L_{i})$$
+
+Where:
+
+-   $C_{i} = \textrm{Number of reads mapped to the ith gene}$
+-   $N = \textrm{Total number of mapped reads in the experiment}$
+-   $L_{i} = \textrm{Length of the ith gene in base pairs}$
+
+```{r rpkm, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../output/transcript_rpkm.tsv")){
+  total_reads <- colSums(tx_counts)
+  tx_rpkm <- tx_counts * 1e9
+  tx_rpkm <- sweep(tx_rpkm, 1, tx_size[row.names(tx_rpkm)], FUN="/")
+  tx_rpkm <- sweep(tx_rpkm, 2, total_reads, FUN="/")
+  tx_rpkm$tx_size <- tx_size[row.names(tx_rpkm)]
+
+write.table(tx_rpkm, 
+            file="../output/transcript_rpkm.tsv", 
+            sep="\t", 
+            quote=FALSE, 
+            row.names=TRUE, 
+            col.names=NA)
+}else{
+  tx_rpkm <- as.data.frame(fread("../output/transcript_rpkm.tsv", 
+               sep = "\t",
+               header = TRUE,
+               quote = ""))
+  rownames(tx_rpkm) <- tx_rpkm[[1]]
+  tx_rpkm[[1]] <- NULL
+}
+```
+
+After checking (not shown), at least some of the extreme values are related to mitochondrial genes or actin.
+
+```{r summaryrpkm, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, comment=""}
+summary(tx_rpkm)
+```
+
+```{r plotrpkm}
+melted_rpkm <- reshape2::melt(as.matrix(tx_rpkm[, -grep("tx_size", colnames(tx_rpkm))]))
+colnames(melted_rpkm) <- c("transcript_id", "sample_id", "rpkm")
+melted_rpkm$sample_id <- gsub("Jurkat\\.(.*_RNA_R.)_GS.*$", "\\1", melted_rpkm$sample_id)
+ggplot(melted_rpkm, aes(x=log10(rpkm), fill=sample_id)) +
+  geom_histogram(color="white") +
+  facet_wrap(~sample_id, ncol=4) + 
+  theme_bw() +
+  Seurat::NoLegend()
+
+```
+
+# Intersample normalization of transcript counts 
+
+We will apply normalization using DESeq2. Normalization requires a design matrix before calling estimateSizeFactors. We will use the condition as the design variable.
+
+```{r normalizationtx, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+# Normalization
+conditions <- as.factor(gsub("_RNA.*", "", colnames(tx_counts)))
+dds <- DESeqDataSetFromMatrix(countData = tx_counts, 
+                              colData = data.frame(condition=conditions), 
+                              design = ~ condition)
+
+dds <- estimateSizeFactors(dds)
+tx_norm <- counts(dds, normalized=TRUE)  
+colnames(tx_norm) <- gsub("$", "_norm_tx", colnames(tx_norm))
+tx_norm_melted <- reshape2::melt(log10(as.matrix(tx_norm) + 1))
+colnames(tx_norm_melted) <- c("tx_id", "sample", "log10_norm_count")
+tx_norm_melted$condition<- as.factor(gsub("_RNA.*$", "", as.character(tx_norm_melted$sample)))
+ggplot(tx_norm_melted, aes(x=sample, y=log10_norm_count, fill=condition)) + 
+  geom_boxplot() + 
+  theme_bw() + 
+  labs(x="Sample", 
+       y="Log10(Normalized Counts + 1)", 
+       title="Distribution of Normalized Transcript Counts") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+
+
+tx_norm <- tx_norm[itersect_tx_id,]
+
+write.table(tx_norm, 
+            file="../output/transcript_norm.tsv", 
+            sep="\t", 
+            quote=FALSE, 
+            row.names=TRUE, 
+            col.names=NA)
+
+```
+
+# Creating a switchAnalyzeRlist object
+
+As indicated in the documentation of `IsoformSwitchAnalyzeR`, the `switchAnalyzeRlist` object can be created using the `importRdata()` function. This function takes as input:
+
+-   **The normalized transcript counts** (isoformCountMatrix)
+-   **Optional but highly recommended**: A data.frame with unfiltered normalized independent biological (aka not technical) replicate isoform expression. Ideal for supplying quantification measured in Transcripts Per Million (TxPM) or RPKM/FPKM.
+-   **A GTF file**.
+
+```{r creatinglist, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+tx_norm <- as.data.frame(tx_norm)
+tx_norm$isoform_id <- rownames(tx_norm)
+colnames(tx_norm) <- gsub("_norm_tx$", "", 
+                          colnames(tx_norm))
+
+smp_id <- colnames(tx_norm[,-grep("isoform_id", colnames(tx_norm))])
+
+myDesign <- data.frame(
+  sampleID = smp_id,
+  condition = gsub("_R[0-9].*", "", smp_id)
+)
+
+tx_rpkm <- tx_rpkm[rownames(tx_norm),]
+if("tx_size" %in% colnames(tx_rpkm)){
+  tx_rpkm <- tx_rpkm[, -grep("tx_size", colnames(tx_rpkm))]
+}
+tx_rpkm$isoform_id <- rownames(tx_norm)
+
+cmp_to_make <- data.frame(condition_2 = c("CD3andCD28", 
+                                          "PMAandIono", 
+                                          "TNFAlone",
+                                          "IonoAlone",
+                                          "PMAAlone"),
+                          condition_1 = c("Cont", 
+                                          "NS", "NS",
+                                          "NS", "NS"))
+
+print(getwd())
+
+if(!file.exists("../output/aSwitchList.rds")){
+  aSwitchList <- importRdata(
+      isoformCountMatrix   = tx_norm[itersect_tx_id, ],
+      isoformRepExpression = tx_rpkm[itersect_tx_id, ],
+      designMatrix         = myDesign,
+      PTCDistance = 50,
+      addAnnotatedOR = TRUE,
+      foldChangePseudoCount=1,
+      detectUnwantedEffects=FALSE,
+      comparisonsToMake=cmp_to_make,
+      removeNonConvensionalChr=FALSE,
+      estimateDifferentialGeneRange=FALSE,
+      isoformExonAnnoation = "../output/Homo_sapiens.GRCh38.115.chr_tx_subset.gtf.gz",
+      ignoreAfterPeriod = TRUE, 
+      quiet = TRUE
+  )
+
+  saveRDS(aSwitchList, file="../output/aSwitchList.rds")
+}else{
+  aSwitchList <- readRDS("../output/aSwitchList.rds")
+}
+```
+
+The `importRdata()` function automatically imports CDS regions from the GTF supplied. We can check using this command which should return TRUE:
+
+```{r checkorf, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+"orfAnalysis" %in% names(aSwitchList )
+```
+
+Here are the comparison to be performed.
+
+```{r myDesign, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+cmp_to_make
+```
+
+# Filtering a switchAnalyzeRlist
+
+By using `preFilter()` it is possible to remove genes and isoforms from all aspects of the switchAnalyzeRlist by filtering on:
+
+-   geneExpressionCutoff, isoformExpressionCutoff, IFcutoff, acceptedGeneBiotype, acceptedIsoformClassCode, removeSingleIsoformGenes, reduceToSwitchingGenes, reduceFurtherToGenesWithConsequencePotential, onlySigIsoforms, keepIsoformInAllConditions, alpha, dIFcutoff
+
+Some of these criteria will be explained later.
+
+Here, **to limit the number of tests**, we will delete few isoforms using:
+
+- removeSingleIsoformGenes
+- geneExpressionCutoff=1 
+- isoformExpressionCutoff=0.1 
+
+```{r createswitch, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+aSwitchList_pf <- preFilter(
+    switchAnalyzeRlist  = aSwitchList,
+    reduceToSwitchingGenes=FALSE,
+    removeSingleIsoformGenes = TRUE,
+    acceptedIsoformClassCode=NULL,
+    acceptedGeneBiotype=NULL,
+    geneExpressionCutoff=1,
+    dIFcutoff=0,
+    alpha=1,
+    isoformExpressionCutoff=0.1
+    )
+```
+
+# DEXseq analysis
+
+Below are some important parameters for DEXSeq analysis.
+
+-   **dIFcutoff**: The cutoff which the changes in (absolute) isoform usage must be larger than before an isoform is considered switching. This cutoff can remove cases where isoforms with (very) low dIF values are deemed significant and thereby included in the downstream analysis. This cutoff is analogous to having a cutoff on log2 fold change in a normal differential expression analysis of genes to ensure the genes have a certain effect size. Default is 0.1 (10%). **Here we will choose a slightly lower value of 0.075**.
+
+-   **alpha** The cutoff which the FDR correct p-values must be smaller than for calling significant switches. If I understand well, it is related to `isoform_switch_q_value` in the isoformFeatures table. Default is 0.05.
+
+-   **reduceToSwitchingGenes**: A logic indicating whether the switchAnalyzeRlist should be reduced to the genes which contains **at least one isoform significantly differential used (as indicated by the alpha and dIFcutoff parameters)**. Enabling this will make the downstream analysis a lot faster since fewer genes needs to be analyzed. Default is TRUE.
+
+-   **reduceFurtherToGenesWithConsequencePotential**: A logic indicating whether the switchAnalyzeRlist should be reduced to the genes which have the potential to find isoform switches with predicted consequences. This argument is a more strict version of reduceToSwitchingGenes as it not only requires that at least one isoform is significantly differential used (as indicated by the alpha and dIFcutoff parameters) but also **that there is an isoform with the opposite effect size (e.g. used less if the first isoform is used more)**. The minimum effect size of the opposing isoform usage is also controlled by dIFcutoff. The existence of such an opposing isoform means a switch pair can be formed. It is these pairs that can be analyzed for functional consequences further downstream in the IsoformSwitchAnalyzeR workflow. Enabling this will make the downstream analysis a even faster (than just using reduceToSwitchingGenes) since fewer genes needs to be analyzed. Requires that reduceToSwitchingGenes=TRUE to have any effect. Default is TRUE.
+
+-   **onlySigIsoforms**: A logic indicating **whether both isoforms of the pairs should be significantly differential reduceFurtherToGenesWithConsequencePotential=TRUE was used** (as indicated by the alpha and dIFcutoff parameters). Default is FALSE (aka only one of the isoforms in a pair should be significantly differential used)
+
+
+<div class="alert alert-danger" role="alert">
+Here we use:
+
+- **alpha=0.05**: Default.
+- **dIFcutoff = 0.075**: If set to 0.1 (default), ATP2C1 is lost in PMA+Iono condition.
+- **reduceToSwitchingGenes = TRUE**: This means that we are restricting the analysis to genes with at least one transcript switch.
+- **onlySigIsoforms = FALSE**: This argument is important. If set to TRUE, it means that both isoforms of a switch pair must be significantly differentially used. If FALSE, only one of the isoforms in a switch pair needs to be significantly differentially used (alpha < 0.05). However both should have abs(dIF) > 0.075. 
+- reduceFurtherToGenesWithConsequencePotential = FALSE
+</div>
+
+
+```{r dexcall, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../output/aSwitchList_dexcall.rds")){
+  aSwitchList_dex <- isoformSwitchTestDEXSeq(
+      switchAnalyzeRlist = aSwitchList_pf,
+      alpha=0.05,
+      dIFcutoff = 0.075,
+      reduceToSwitchingGenes=TRUE,
+      reduceFurtherToGenesWithConsequencePotential = FALSE,
+      onlySigIsoforms = FALSE,
+      showProgress = FALSE,
+      quiet = FALSE
+  )
+  saveRDS(aSwitchList_dex, "../output/aSwitchList_dexcall.rds")
+}else{
+  aSwitchList_dex <- readRDS("../output/aSwitchList_dexcall.rds")
+}
+```
+
+Here is a summary of this analysis. Note that:
+
+- nrGenes is the number of non-redundant genes with at least one significant isoform switch (based on the alpha and dIFcutoff parameters).
+- nrSwitches is the number of non-redundant isoform pairs (one upregulated and one downregulated and vice versa).
+
+```{r dexsummary, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+aSwitchList_dex <- readRDS("../output/aSwitchList_dexcall.rds")
+summary_switch_dex <- extractSwitchSummary(aSwitchList_dex,
+                                       alpha=0.05,
+                                       dIFcutoff = 0.075)
+summary_switch_dex
+```
+
+# DEXseq analysis summary
+
+We can summarize the results of the DEXSeq analysis using the `extractSwitchSummary()` function. This function will return a data.frame with the number of isoforms, switches and genes that were identified as significant based on the specified alpha and dIF cutoff values. We can also plot this summary using ggplot2.
+
+```{r dexsummary2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+summary_switch_dex <- reshape2::melt(summary_switch_dex)
+
+summary_switch_dex$variable <- factor(x = summary_switch_dex$variable, 
+                                     levels = c("nrIsoforms", "nrSwitches", "nrGenes"),
+                                     labels = c("Number of Isoforms", "Number of Switches", "Number of Genes"))
+
+```
+
+Below is a bar plot summarizing the DEXSeq results. The plot shows the number of isoforms, the number of switches, and the number of genes that were identified as significant based on the specified alpha and dIF cutoff values.
+
+```{r plotdexsummary, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+summary_switch_dex$variable <- factor(summary_switch_dex$variable, levels=c("Number of Isoforms", 
+                                                                               "Number of Switches", 
+                                                                               "Number of Genes"))
+
+summary_switch_dex$Comparison <- factor(summary_switch_dex$Comparison, levels=c("NS vs TNFAlone", 
+                                                                                "NS vs IonoAlone",
+                                                                                "NS vs PMAAlone",
+                                                                                "NS vs PMAandIono",
+                                                                                "Cont vs CD3andCD28",
+                                                                                "Combined"))
+
+ggplot(summary_switch_dex, aes(x=Comparison, y=value, fill=Comparison)) +
+  geom_col() +
+  geom_text(aes(label = value), vjust = 2,
+            hjust = 0.5,   # pushes text slightly outside bars
+            size = 3,
+            color="white") +
+  facet_wrap(variable ~ .) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+  
+```
+
+# Inspecting the table of isoform features
+
+The isoform features table contains all the information about the isoforms that were analyzed in the DEXSeq analysis. It contains the following columns:
+
+- **iso_ref** : A unique reference to a specific isoform in a specific comparison of conditions. Mainly created to have an easy handle to integrate data from all the parts of a switchAnalyzeRlist.
+
+- **gene_ref** : A unique reference to a specific gene in a specific comparison of conditions. Mainly created to have an easy handle to integrate data from all the parts of a switchAnalyzeRlist.
+
+- **isoform_id** : A unique isoform id
+- **gene_id** : A unique gene id referring to a gene at a specific genomic loci (not the same as gene_name since gene_names can refer to multiple genomic loci)
+- **condition_1** : Name of the first condition in the comparison
+- **condition_2** : Name of the second condition in the comparison
+- **gene_name** : The gene name associated with the <gene_id>, typically a more readable one (for example p53 or BRCA1)
+- **gene_overall_mean** : Mean expression of <gene_id> across all samples (if you create it yourself consider inter-library normalization)
+- **gene_value_1** : Expression of <gene_id> in condition_1 (if you create it yourself consider inter-library normalization)
+- **gene_value_2** : Expression of <gene_id> in condition_2 (if you create it yourself consider inter-library normalization)
+- **gene_stderr_1** : Standard error (of mean) of <gene_id> expression in condition_1
+- **gene_stderr_2** : Standard error (of mean) of <gene_id> expression in condition_2
+- **gene_log2_fold_change** : log2 fold change of <gene_id> expression between condition_1 and condition_2
+- **gene_q_value** : The FDR corrected (for multiple testing) p-value of the differential expression test of <gene_id>
+- **iso_overall_mean** : Mean expression of <isoform_id> across all samples (if you create it yourself consider inter-library normalization)
+- **iso_value_1** : Expression of <isoform_id> in condition_1 (if you create it yourself consider inter-library normalization)
+- **iso_value_2** : Expression of <isoform_id> in condition_2 (if you create it yourself consider inter-library normalization)
+- **iso_stderr_1** : Standard error (of mean) of <isoform_id> expression in condition_1
+- **iso_stderr_2** : Standard error (of mean) of <isoform_id> expression in condition_2
+- **iso_log2_fold_change** : log2 fold change of <isoform_id> expression between condition_1 and condition_2
+- **iso_q_value** : The FDR corrected (for multiple testing) p-value of the differential expression test of <isoform_id>
+- **IF_overall** : The average <isoform_id> usage across all samples (given as Isoform Fraction (IF) value)
+- **IF1** : The <isoform_id> usage in condition 1 (given as Isoform Fraction (IF) value)
+- **IF2** : The <isoform_id> usage in condition 2 (given as Isoform Fraction (IF) value)
+- **dIF** : The change in isoform usage from condition_1 to condition_2 (difference in IF values (dIF))
+- **isoform_switch_q_value** : The q-value of the test of differential isoform usage in <isoform_id> between condition 1 and condition 2. Use NA if not performed. Will be overwritten by the result of testIsoformSwitches. If only performed at gene level use same values on isoform level.  
+- **gene_switch_q_value** : The q-value of the test of differential isoform usage in <gene_id> between condition 1 and condition 2. Use NA if not performed. Will be overwritten by the result of testIsoformSwitches.
+
+This file can be found in the **output** folder:
+
+```{r dttable_1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+alpha <- 0.05
+dIFcutoff <- 0.075
+
+out_file <- paste("../output/isoformFeatures_dexseq_alpha_", alpha, "_dIF_", dIFcutoff, ".tsv", sep="")
+
+if(!file.exists(out_file)){
+  
+  write.table(aSwitchList_dex$isoformFeatures,
+              file=out_file, 
+              sep="\t", 
+              quote=FALSE, 
+              row.names=TRUE, 
+              col.names=NA)
+
+}
+
+```
+
+# Annotate alternative splicing events (SE, A5, A3, IR, MX, etc.)
+
+Using the `analyzeAlternativeSplicing()` function, we can annotate the DTU events highlighted by the DEXSeq analysis with the type of alternative splicing event they are associated with. The following types of alternative splicing events are annotated: 
+
+-   **ES: Exon Skipping**. Compared to the hypothetical pre-RNA a single exon was skipped in the isoform analyzed (for every ES event annotated).
+
+-   **MEE: Mutually exclusive exon**. Special case were two isoforms form the same gene contains two mutually exclusive exons and which are not found in any of the other isoforms from that gene.
+
+-   **MES: Multiple Exon Skipping**. Compared to the hypothetical pre-RNA multiple consecutive exon was skipped in the isoform analyzed (for every MES event annotated).
+
+-   **IR: Intron Retention**. Compared to the hypothetical pre-RNA an intron was retained in the isoform analyzed.
+
+-   **A5: Alternative 5'end donor site**. Compared to the hypothetical pre-RNA an alternative 5'end donor site was used. Since it is compared to the pre-RNA, the donor site used is per definition more upstream than the the pre-RNA (the upstream exon is shorter).
+
+-   **A3: Alternative 3'end acceptor site**. Compared to the hypothetical pre-RNA an alternative 3'end acceptor site was used. Since it is compared to the pre-RNA, the donor site used is per definition more downstream than the the pre-RNA (the downstream exon is shorter).
+
+-   **ATSS: Alternative Transcription Start Sites**. Compared to the hypothetical pre-RNA an alternative transcription start sites was used. Since it is compared to the pre-RNA, the ATSS site used is per definition more downstream than the the pre-RNA .
+
+-   **ATTS: Alternative Transcription Termination Sites**. Compared to the hypothetical pre-RNA an alternative transcription Termination sites was used. Since it is compared to the pre-RNA, the ATTS site used is per definition more upstream than the the pre-RNA.
+
+
+The `analyzeAlternativeSplicing()` function will return a `switchAnalyzeRlist` with a new slot called `alternativeSplicing` which contains the annotation of the alternative splicing events. A column  'IR' is also added to the `isoformFeatures` table to indicate whether the isoform is associated with intron retention or not. 
+
+```{r analyzeAlternativeSplicing1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../output/aSwitchList_dex_ann.rds")){
+aSwitchList_dex_ann <- analyzeAlternativeSplicing(aSwitchList_dex,
+                                                  onlySwitchingGenes=TRUE,
+                                                  alpha=0.05,
+                                                  dIFcutoff = 0.075,
+                                                  quiet = TRUE)
+saveRDS(aSwitchList_dex_ann, "../output/aSwitchList_dex_ann.rds")
+}else{
+  aSwitchList_dex_ann <- readRDS("../output/aSwitchList_dex_ann.rds")
+}
+rm(aSwitchList_dex)
+```
+
+
+```{r analyzeAlternativeSplicing1_save_2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+alpha <- 0.05
+dIFcutoff <- 0.075
+
+out_file <- paste("../output/isoformFeatures_dexseq_alpha_", alpha, "_dIF_", dIFcutoff, ".tsv", sep="")
+
+if(!file.exists(out_file)){
+  
+  write.table(aSwitchList_dex_ann$isoformFeatures,
+              file=out_file, 
+              sep="\t", 
+              quote=FALSE, 
+              row.names=TRUE, 
+              col.names=NA)
+
+}
+
+out_file <- paste("../output/isoformFeatures_dexseq_alpha_", alpha, "_dIF_", dIFcutoff, "_splicing.tsv", sep="")
+
+
+if(!file.exists(out_file)){
+  
+  write.table(aSwitchList_dex_ann$AlternativeSplicingAnalysis,
+              file=out_file, 
+              sep="\t", 
+              quote=FALSE, 
+              row.names=TRUE, 
+              col.names=NA)
+
+}
+
+```
+
+We can get a global overview of the splicing events associated with the isoforms contained in the switchAnalyzeRlist object using the `extractSplicingSummary()` function. 
+
+```{r extractSplicingSummary2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+p <- extractSplicingSummary(
+    aSwitchList_dex_ann,
+    asFractionTotal = FALSE,
+    alpha = 0.05,
+    dIFcutoff = 0.075,
+    onlySigIsoforms=FALSE,
+    plotGenes=FALSE,
+    returnResult = FALSE
+)
+```
+
+A statistical test can also be performed to check whether the splicing events are enriched in the isoforms that are significantly differentially used (based on the alpha and dIFcutoff parameters) compared to the non-significant isoforms. This can be done using the `extractSplicingEnrichment()` function. Here the statistical test is a binomial test. However, looking the way it is use in the code (no information in help file) **I am highly sceptical**...
+
+```{r extractSplicingEnrichment, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+extractSplicingEnrichment(
+    aSwitchList_dex_ann,
+    splicingToAnalyze='all',
+    onlySigIsoforms=FALSE,
+    alpha = 0.05,
+    dIFcutoff = 0.075,
+    returnResult=FALSE,
+    returnSummary=FALSE
+)
+```
+
+This function compares the enrichment of alternative splicing (f.x. exon skipping) between two comparisons (ctrl vs ko1 compared to ctrl vs ko2) and reports whether there is a significant difference between the comparisons. It other words it compares the output of extractSplicingEnrichment. Again, I'm not totally convinced by the statistical part.
+
+```{r extractSplicingEnrichmentComparison, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+out <- extractSplicingEnrichmentComparison(
+    aSwitchList_dex_ann,
+    splicingToAnalyze = 'all',
+    alpha = 0.05,
+    dIFcutoff = 0.075,
+    onlySigIsoforms = FALSE,
+    countGenes = TRUE,
+    localTheme = theme_bw(base_size = 14),
+    minEventsForPlotting = 10,
+    returnResult=FALSE,
+    plot=TRUE
+)
+```
+
+
+# Plotting summary of DEXseq analysis
+
+Since all the data about isoform and gene expression is saved in the switchAnalyzeRlist, we can also start building some summarizing plots. For instance a volcano plot:
+
+```{r plotdexsummary2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+aSwitchList_dex_ann$isoformFeatures <- aSwitchList_dex_ann$isoformFeatures %>% 
+  dplyr::mutate(comparison=paste0(condition_1, "vs", condition_2))
+
+ggplot(data = aSwitchList_dex_ann$isoformFeatures, 
+       aes(x = dIF,
+           y = -log10(isoform_switch_q_value))) +
+  geom_point(
+    aes(color = abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30),
+    size = 1
+  ) +
+  geom_hline(yintercept = -log10(0.05), linetype = 'dashed') +
+  geom_vline(xintercept = c(-0.1, 0.1), linetype = 'dashed') +
+  scale_color_manual(
+    'abs(dIF) > 0.05 &\n -log10(q) > 40',
+    values = c('grey', 'steelblue')
+  ) +
+  labs(x = 'dIF', y = '-Log10 ( Isoform Switch Q Value )') +
+  theme_bw() +
+  ggrepel::geom_label_repel(
+    data = subset(aSwitchList_dex_ann$isoformFeatures,
+                  -log10(isoform_switch_q_value) > 30 &
+                  abs(dIF) > 0.05),
+    aes(label = paste0(gene_id, "\n", isoform_id)),
+    size = 1.5,
+    box.padding = 0.3,
+    point.padding = 0.5,
+    segment.color = 'grey50',
+    max.overlaps = 20
+  ) +
+  facet_wrap(~comparison)
+  
+```
+
+
+Below, we select the top 10 ranked genes based on the isoform_switch_q_value (alpha) for each comparison (with positive dIF >= 0.075). 
+We can see that ATP2C1 is ranked 2nd in the comparison between CD3 and CD28 vs control.
+
+```{r rankAT2P2C1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+aSwitchList_dex_ann$isoformFeatures %>%
+    dplyr::filter(dIF > 0) %>%
+    dplyr::group_by(comparison, gene_id) %>%
+    dplyr::slice_min(isoform_switch_q_value, n = 1, with_ties = FALSE) %>%  # best isoform per gene
+    dplyr::ungroup() %>%
+    dplyr::arrange(comparison, isoform_switch_q_value) %>%
+    dplyr::group_by(comparison) %>%
+    dplyr::mutate(rank  = dplyr::row_number()) %>% 
+    dplyr::slice_min(isoform_switch_q_value, n = 10, with_ties = FALSE)%>% dplyr::ungroup() %>%
+    dplyr::select(comparison, gene_id, isoform_id, dIF, isoform_switch_q_value, rank) -> tmp
+
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
+Below, we select the top 10 ranked genes based on the isoform_switch_q_value for each comparison (with negative dIF). **Here ATP2C1 does not appear has none of its isoforms has a significant negative dIF.** 
+
+```{r rankAT2P2C1_2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+aSwitchList_dex_ann$isoformFeatures %>%
+    dplyr::filter(dIF < 0) %>%
+    dplyr::group_by(comparison, gene_id) %>%
+    dplyr::slice_min(isoform_switch_q_value, n = 1, with_ties = FALSE) %>%  # best isoform per gene
+    dplyr::ungroup() %>%
+    dplyr::arrange(comparison, isoform_switch_q_value) %>%
+    dplyr::group_by(comparison) %>%
+    dplyr::mutate(rank  = dplyr::row_number()) %>% 
+    dplyr::slice_min(isoform_switch_q_value, n = 10, with_ties = FALSE)%>% dplyr::ungroup() %>%
+    dplyr::select(comparison, gene_id, isoform_id, dIF, isoform_switch_q_value, rank) -> tmp
+
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
+Here are the switching pairs of ATP2C1 isoforms. Again note that both pairs of a switch should have abs(dIF) > 0.075 but only one of the isoforms in a pair needs to be significantly differentially used (alpha < 0.05). Here we thus set alpha  to 1 and retrieve a limited number of isoforms.
+
+```{r getinfoiso, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+# Get info about isoforms that are switching for ATP2C1
+DT::datatable(IsoformSwitchAnalyzeR:::extractSwitchPairs(aSwitchList_dex_ann, 
+                                           alpha = 1, 
+                                           dIFcutoff = 0.075) %>% 
+  filter(gene_name=="ATP2C1"))
+```
+
+Get informations about the isoform. Note that we add a column **Significant** to put emphasis on the isoforms that are **significantly differentially used (alpha < 0.05) and have abs(dIF) > 0.075**. We can see that only two isoforms with positive dIF are significantly differentially used (based on DEXseq text).
+
+```{r extractSwitchPairs, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+IsoformSwitchAnalyzeR:::extractSwitchPairs(aSwitchList_dex_ann, 
+                                           alpha = 1, dIFcutoff = 0.075) %>% 
+  dplyr::filter(gene_name=="ATP2C1") %>% 
+  dplyr::select(isoformUpregulated, isoformDownregulated) %>% 
+  unlist() -> tx_list
+
+tx_list <- unique(tx_list)
+
+# Get the information about these isoforms in the isoformFeatures table
+aSwitchList_dex_ann$isoformFeatures %>% 
+  dplyr::filter(isoform_id %in% tx_list) %>% 
+  dplyr::select(IF1, IF2, dIF,  isoform_switch_q_value, isoform_id, condition_1, condition_2) %>% 
+  dplyr::mutate(Significant = isoform_switch_q_value < 0.05 & abs(dIF) > 0.075) %>%
+  dplyr::filter(abs(dIF) > 0.075) %>%
+  mutate(across(c(IF1, IF2, dIF), function(x) round(x, 3))) -> tmp
+
+DT::datatable(tmp, options = list(pageLength = 12, autoWidth = TRUE), rownames = FALSE)
+```
+
+Another interesting overview plot can be made as follows. It tend to indicate that there is no clear relationship between the gene log2 fold change and the dIF.
+
+```{r plotdexsummary3, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+ggplot(data=aSwitchList_dex_ann$isoformFeatures,
+       aes(x=gene_log2_fold_change, 
+           y=dIF)) +
+    geom_point(
+        aes( color=abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30 ), 
+        size=1
+    ) + 
+    geom_hline(yintercept = 0, linetype='dashed') +
+    geom_vline(xintercept = 0, linetype='dashed') +
+    scale_color_manual('abs(dIF) > 0.05 &\n -log10(isoform_switch_q_value) > 30', values = c('grey','steelblue')) +
+    labs(x='Gene log2 fold change', y='dIF') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+    data = subset(aSwitchList_dex_ann$isoformFeatures, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30), 
+    aes(label = paste0(gene_id, "\n", isoform_id)),
+    size = 1.5,
+    box.padding = 0.3,
+    point.padding = 0.5,
+    segment.color = 'grey50',
+    max.overlaps = 40
+  ) +
+  facet_wrap(~comparison)
+```
+
+We can also represent the results based on the **ranking of the isoform_switch_q_value**.   
+
+```{r rankingplot, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+data_tmp <- aSwitchList_dex_ann$isoformFeatures %>% 
+         dplyr::mutate(direction=case_when(dIF > 0 ~ "Up",
+                                          dIF < 0 ~ "Down",
+                                          dIF == 0 ~ "No change")) %>%
+         dplyr::mutate(sign=abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30)
+ggplot(data=data_tmp,
+       aes(y=-log10(isoform_switch_q_value), 
+           x=rank(isoform_switch_q_value))) +
+    geom_point(
+        aes(color=sign), 
+        size=1
+    ) + 
+    scale_color_manual('abs(dIF) > 0.05 &\n -log10(isoform_switch_q_value) > 30', 
+                       values = c('grey','steelblue')) +
+    labs(x='Rank(isoform_switch_q_value)', y='-log10(isoform_switch_q_value)') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+    data = subset(data_tmp, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30), 
+    aes(label = paste0(gene_id, "\n", isoform_id), fill=direction),
+    size = 1.5,
+    box.padding = 0.3,
+    point.padding = 0.5,
+    segment.color = 'grey50',
+    max.overlaps = 20
+  )  +
+  facet_wrap(~comparison) +
+  scale_fill_manual(values=c("Up"="salmon", "Down"="lightgreen", "No change"="white"))
+```
+
+Finally we can also produce a Venn Diagram using the following command:
+
+```{r extractSwitchOverlap, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+extractSwitchOverlap(aSwitchList_dex_ann,
+                     alpha=0.05,
+                     dIFcutoff = 0.075)
+```
+
+# Extracting sequence
+
+```{r extractSequence, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../output/aSwitchList_dex_ann_seq.rds")){
+  
+ aSwitchList_dex_ann_seq <- extractSequence(
+    aSwitchList_dex_ann,
+    dIFcutoff=0.075,
+    alpha = 0.05,
+    pathToOutput = "../output",
+    genomeObject = BSgenome.Hsapiens.UCSC.hg38,
+    removeORFwithStop = TRUE,
+    quiet = FALSE
+  )
+  
+  saveRDS(aSwitchList_dex_ann_seq, "../output/aSwitchList_dex_ann_seq.rds")
+
+}else{
+  aSwitchList_dex_ann_seq <- readRDS("../output/aSwitchList_dex_ann_seq.rds")
+}
+
+rm(aSwitchList_dex_ann)
+```
+
+
+# Analyse pfam
+
+The objective here is to analyze the pfam domains that are present in the isoforms. This can be done using the `analyzePFAM()` function. This function takes as input the switchAnalyzeRlist object and the path to the pfam scan results file. The pfam scan results file is a tab-separated file that contains the results of running the pfam_scan.pl script on the extracted sequences. The pfam_scan.pl script is a perl script that can be used to scan protein sequences against the pfam database. The pfam database is a collection of protein families and domains that can be used to annotate protein sequences.
+
+Below is the code to run pfam_scan.pl on the extracted sequences. Note that you need to have the pfam_scan.pl script and the pfam database downloaded and unzipped in the specified directory. The pfam_scan.pl script can be downloaded from the pfam website and the pfam database can be downloaded from the pfam website as well. The pfam_scan.pl script requires perl to be installed on your system.
+
+```{bash pfam, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+# wget https://ftp.ebi.ac.uk/pub/databases/Pfam/releases/Pfam38.2/Pfam-A.hmm.gz
+# gunzip Pfam-A.hmm.gz
+# wget https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.dat.gz
+# gunzip Pfam-A.hmm.dat.gz
+# wget https://ftp.ebi.ac.uk/pub/databases/Pfam/releases/Pfam38.2/active_site.dat.gz
+# tar xvfz active_site.dat.gz
+
+# module load pfam_scan/1.6
+
+# pfam_scan.pl -as -cpu 20 -fasta isoformSwitchAnalyzeR_isoform_AA.fasta -dir /shared/projects/project_dputhier/049_alternative_prom_salva/hmm  -outfile isoformSwitchAnalyzeR_isoform_AA_pfam_scanresults.txt
+
+# perl -ne 'if(/^#/){print}else{s/ +/ /g; @tmp=split " "; print unless($tmp[8]==0)}' isoformSwitchAnalyzeR_isoform_AA_pfam_scanresults.txt  > isoformSwitchAnalyzeR_isoform_AA_pfam_scanresults_modif.txt
+
+```
+
+```{r analyzepfam, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+if(!file.exists("../output/aSwitchList_dex_ann_seq_pfam.rds")){
+  aSwitchList_dex_ann_seq_pfam <- IsoformSwitchAnalyzeR::analyzePFAM(
+      aSwitchList_dex_ann_seq,
+      pathToPFAMresultFile = "../output/isoformSwitchAnalyzeR_isoform_AA_pfam_scanresults_modif.txt",
+      showProgress = FALSE,
+      quiet = TRUE
+  )
+
+  saveRDS(aSwitchList_dex_ann_seq_pfam, "../output/aSwitchList_dex_ann_seq_pfam.rds")
+
+}else{
+  aSwitchList_dex_ann_seq_pfam <- readRDS("../output/aSwitchList_dex_ann_seq_pfam.rds")
+}
+
+rm(aSwitchList_dex_ann_seq)
+  
+```
+
+# Predicting consequences
+
+Several consequences can be predicted using the `analyzeSwitchConsequences()` function. This function takes as input the switchAnalyzeRlist object and a vector of consequences to analyze. The consequences that can be analyzed are:
+
+-   **intron_retention**: Whether the switch is associated with intron retention.
+-   **ORF_seq_similarity**: Whether the switch is associated with a change in the ORF sequence similarity. This is based on the analysis of the pfam domains and the sequence similarity between the isoforms.
+
+The arguments passed to consequencesToAnalyze must be a combination of:
+
+-   **all** : Test transcripts for any of the differences described below. Please note that jointly the analysis below covers all transcript feature meaning that they should be different. Furthermore note that 'class_code' will only be included if the switchAnalyzeRlist was made from Cufflinks/Cuffdiff output.
+
+-   **tss** : Test transcripts for whether they use different Transcription Start Site (TSS) (more than ntCutoff from each other).
+
+-   **tts** : Test transcripts for whether they use different Transcription Termination Site (TTS) (more than ntCutoff from each other).
+
+-   **last_exon** : Test whether transcripts utilizes different last exons (defined as the last exon of each transcript is non-overlapping).
+
+-   **isoform_seq_similarity** : Test whether the isoform nucleotide sequences are different (as described above). Reported as different if the measured JCsim is smaller than ntJCsimCutoff and the length difference of the aligned and combined region is larger than ntCutoff.
+
+-   **isoform_length** : Test transcripts for differences in isoform length. Only reported if the difference is larger than indicated by the ntCutoff and ntFracCutoff. Please note that this is a less powerful analysis than implemented in 'isoform_seq_similarity' as two equally long sequences might be very different.
+
+-   **exon_number** : Test transcripts for differences in exon number.
+
+-   **intron_structure** : Test transcripts for differences in intron structure, e.g. usage of exon-exon junctions. This analysis corresponds to analyzing whether all introns in one isoform is also found in the other isoforms.
+
+-   **intron_retention** : Test for differences in intron retentions (and their genomic positions). Require that analyzeIntronRetention have been run.
+
+-   **isoform_class_code** : Test transcripts for differences in the transcript classification provide by cufflinks. For a updated list of class codes see http://cole-trapnell-lab.github.io/cufflinks/cuffcompare/#transfrag-class-codes.
+
+-   **coding_potential** : Test transcripts for differences in coding potential, as indicated by the CPAT or CPC2 analysis. Requires that analyzeCPAT or analyzeCPC2 have been used to add external conding potential analysis to the switchAnalyzeRlist.
+
+-   **ORF_seq_similarity** : Test whether the amino acid sequences of the ORFs are different (as described above). Reported as different if the measured JCsim is smaller than AaJCsimCutoff and the length difference of the aligned and combined region is larger than AaCutoff. Requires that least one of the isoforms are annotated with a ORF either via identifyORF or by supplying a GTF file and setting addAnnotatedORFs=TRUE when creating the switchAnalyzeRlist.
+
+-   **ORF_genomic** : Test transcripts for differences in genomic position of the Open Reading Frames (ORF). Requires that least one of the isoforms are annotated with an ORF either via identifyORF or by supplying a GTF file and settingaddAnnotatedORFs=TRUE when creating the switchAnalyzeRlist.
+
+-   **ORF_length** : Test transcripts for differences in length of Open Reading Frames (ORF). Note that this is a less powerful analysis than implemented in ORF_seq_similarity as two equally long sequences might be very different. Only reported if the difference is larger than indicated by the ntCutoff and ntFracCutoff. Requires that least one of the isoforms are annotated with a ORF either via identifyORF or by supplying a GTF file and setting addAnnotatedORFs=TRUE when creating the switchAnalyzeRlist.
+
+-   **5_utr_seq_similarity** : Test whether the isoform nucleotide sequences of the 5' UnTranslated Region (UTR) are different (as described above). The 5'UTR is defined as the region from the transcript start to the ORF start. Reported as different if the measured JCsim is smaller than ntJCsimCutoff and the length difference of the aligned and combined region is larger than ntCutoff. Requires that both the isoforms are annotated with an ORF.
+
+-   **5_utr_length** : Test transcripts for differences in the length of the 5' UnTranslated Region (UTR). The 5'UTR is defined as the region from the transcript start to the ORF start. Note that this is a less powerful analysis than implemented in '5_utr_seq_similarity' as two equally long sequences might be very different. Only reported if the difference is larger than indicated by the ntCutoff and ntFracCutoff. Requires that both the isoforms are annotated with a ORF.
+
+-   **3_utr_seq_similarity** : Test whether the isoform nucleotide sequences of the 3' UnTranslated Region (UTR) are different (as described above). The 3'UTR is defined as the region from the end of the ORF to the transcript end. Reported as different if the measured JCsim is smaller than ntJCsimCutoff and the length difference of the aligned and combined region is larger than ntCutoff. Requires that both the isoforms are annotated with a ORF.
+
+-   **3_utr_length** : Test transcripts for differences in the length of the 3' UnTranslated Regions (UTR). The 3'UTR is defined as the region from the end of the ORF to the transcript end. Note that this is a less powerful analysis than implemented in 3_utr_seq_similarity as two equally long sequences might be very different. Requires that identifyORF have been used to predict NMD sensitivity or that the ORF was imported though one of the dedicated import functions implemented in isoformSwitchAnalyzeR. Only reported if the difference is larger than indicated by the ntCutoff and ntFracCutoff. Requires that both the isoforms are annotated with a ORF.
+
+-   **NMD_status** : Test transcripts for differences in sensitivity to Nonsense Mediated Decay (NMD). Requires that both the isoforms have been annotated with PTC either via identifyORF or by supplying a GTF file and setting addAnnotatedORFs=TRUE when creating the switchAnalyzeRlist.
+
+-   **domains_identified** : Test transcripts for differences in the name and order of which domains are identified by the Pfam in the transcripts. Requires that analyzePFAM have been used to add external Pfam analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **domain_isotype** : Test transcripts for differences in the isotype of overlapping protein domain. Requires that analyzePFAM have been used to add external Pfam analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **domain_length** : Test transcripts for differences in the length of overlapping domains of the same type (same hmm_name) thereby enabling analysis of protein domain truncation. Do however note that a small difference in length is will likely not truncate the protein domain. The length difference, measured in AA, must be larger than AaCutoff and AaFracCutoff. Requires that analyzePFAM have been used to add external Pfam analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **genomic_domain_position** : Test transcripts for differences in the genomic position of the domains identified by the Pfam analysis (Will be different unless the two isoforms have the same domains at the same genomic location). Requires that analyzePFAM have been used to add external Pfam analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **IDR_identified** : Test for differences in isoform IDRs. Specifically the two isoforms are analyzed for whether they contain IDRs which do not overlap in genomic coordinates. Requires that analyzeNetSurfP2 or analyzeIUPred2A have been used to add external IDR analysis to the switchAnalyzeRlist.
+
+-   **IDR_length** : Test for differences in the length of overlapping (in genomic coordinates) IDRs. The length difference, measured in AA, must be larger than AaCutoff and AaFracCutoff. Requires that analyzeNetSurfP2 or analyzeIUPred2A have been used to add external IDR analysis to the switchAnalyzeRlist.
+
+-   **IDR_type** : Test for differences in IDR type. Specifically the two isoforms are tested for overlapping IDRs (genomic coordinates) and overlapping IDRs are compared with regards to their IDR type (IDR vs IDR w binding site). Only available if analyzeIUPred2A was used to add external IDR analysis to the switchAnalyzeRlist.
+
+-   **signal_peptide_identified** : Test transcripts for differences in whether a signal peptide was identified or not by the SignalP analysis. Requires that analyzeSignalP have been used to add external SignalP analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **sub_cell_location** : Test for any differences in predicted sub-cellular localization. Requires that analyzeDeepLoc2 have been used to add external location analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **sub_cell_shift_to_cell_membrane** : Test for differences in membrane associations. Requires that analyzeDeepLoc2 have been used to add external location analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **sub_cell_shift_to_cytoplasm** : Test for differences in cytoplasm associations. Requires that analyzeDeepLoc2 have been used to add external location analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **sub_cell_shift_to_nucleus** : Test for differences in nuclear localization. Requires that analyzeDeepLoc2 have been used to add external location analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **sub_cell_shift_to_Extracellular** : Test differences in extracellular localization. Requires that analyzeDeepLoc2 have been used to add external location analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **isoform_topology** : Test differences in predicted topology compared to the cell membrane (intracellular, transmembrane helix, extracellular). Requires that analyzeDeepTMHMM have been used to add external topology analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **extracellular_region_count** : Test differences in number of extracellular region. Requires that analyzeDeepTMHMM have been used to add external topology analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **intracellular_region_count** : Test differences in number of intracellular region. Requires that analyzeDeepTMHMM have been used to add external topology analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF.
+
+-   **extracellular_region_length** : Test differences in total length of extracellular regions. Requires that analyzeDeepTMHMM have been used to add external topology analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF. The length difference, measured in AA, must be larger than AaCutoff and AaFracCutoff
+
+-   **intracellular_region_length** : Test differences in total length of intracellular regions. Requires that analyzeDeepTMHMM have been used to add external topology analysis to the switchAnalyzeRlist. Requires that both the isoforms are annotated with a ORF. The length difference, measured in AA, must be larger than AaCutoff and AaFracCutoff
+
+```{r predictconsequences, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+coi <- c('tss', 'tts', 'intron_retention', 
+         'ORF_seq_similarity', 
+         'NMD_status',
+         'domain_isotype',
+         'last_exon', 
+         'isoform_seq_similarity',
+         'isoform_length',
+         'exon_number',
+         'intron_structure',
+         'intron_retention', 
+         'ORF_genomic',
+         'ORF_length',
+         '5_utr_seq_similarity',
+         '5_utr_length',
+         '3_utr_seq_similarity',
+         '3_utr_length',
+         'domains_identified',
+         'domain_length',
+         'domain_isotype',
+         'genomic_domain_position'
+         )
+
+if(!file.exists("../output/aSwitchList_dex_ann_seq_pfam_pred.rds")){
+aSwitchList_dex_ann_seq_pfam_pred <- analyzeSwitchConsequences(
+    aSwitchList_dex_ann_seq_pfam,
+    consequencesToAnalyze = coi, 
+    alpha = 0.05,
+    dIFcutoff = 0.075,
+    showProgress=FALSE
+)
+saveRDS(aSwitchList_dex_ann_seq_pfam_pred, "../output/aSwitchList_dex_ann_seq_pfam_pred.rds")
+}else{
+  aSwitchList_dex_ann_seq_pfam_pred <- readRDS("../output/aSwitchList_dex_ann_seq_pfam_pred.rds") 
+}
+```
+
+
+```{r extractConsequenceSummary, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+extractConsequenceSummary(
+    aSwitchList_dex_ann_seq_pfam_pred, 
+    alpha = 0.05, 
+    dIFcutoff = 0.075, 
+    returnResult = FALSE,
+    plotGenes = TRUE
+)
+```
+
+
+```{r extractConsequenceGenomeWide, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+extractConsequenceGenomeWide(aSwitchList_dex_ann_seq_pfam_pred,
+                             featureToExtract = 'all',  
+                             alpha=0.05, 
+                             dIFcutoff = 0.075, 
+                             plot=TRUE, 
+                             returnResult=FALSE)
+```
+
+# Consequences of ATP2C1 Switch
+
+```{r}
+tmp <- aSwitchList_dex_ann_seq_pfam_pred$switchConsequence %>% filter(gene_name=="ATP2C1")
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+
+
+```
+
+# SwitchPlot
+
+```{r switchPlot_1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+IsoformSwitchAnalyzeR::switchPlot(
+    switchAnalyzeRlist=aSwitchList_dex_ann_seq_pfam_pred,
+    gene = "ATP2C1",
+    condition1 = "CD3andCD28",
+    condition2 = "Cont",
+    dIFcutoff = 0.075)
+
+```
+
+```{r switchPlot_2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+IsoformSwitchAnalyzeR::switchPlot(
+    switchAnalyzeRlist=aSwitchList_dex_ann_seq_pfam_pred,
+    gene = "ATP2C1",
+    condition1 = "NS",
+    condition2 = "PMAandIono",
+    dIFcutoff = 0.075)
+```
+
+# Session info
+
+```{r sessioninfo, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+sessioninfo::session_info()
+```
