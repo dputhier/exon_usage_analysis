@@ -47,42 +47,11 @@ knitr::opts_chunk$set(
 )
 ```
 
-For this analysis, we will use the `IsoformSwitchAnalyzeR` library to analyze the differential transcript usage (DTU). The original article describing `IsoformSwitchAnalyzeR` can be found [in here](https://academic.oup.com/bioinformatics/article/35/21/4469/5466456). The method had been described in a previous article entitled [The Landscape of Isoform Switches in Human Cancers](https://pubmed.ncbi.nlm.nih.gov/28584021/).
-
 The `IsoformSwitchAnalyzeR` package is part of Bioconductor. This package seems to evolve a lot. Here I'm using version 3.22 of Bioconductor to ensure that we benefit from the latest developements of `IsoformSwitchAnalyzeR`.
 
 ```{r BiocManager, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
 BiocManager::version() 
 ```
-
--   For **optimal results** the `importRdata()` function expects a table with TPM or R/FPKM counts at the transcript level (not the gene level). We will thus compute RPKM counts based on transcript length later on.
-
--   **Note that the package documentation is sometimes confusing**. Some filters that are applied are sometimes not clearly explained in the documentation nor documented at all...
-
-We can keep in mind that we can do several levels of analysis based on RNA-Seq data:
-
-- **DGE** asks: is this gene more or less expressed overall?
-- **DTE** asks: is this specific transcript more or less expressed?
-- **DTU** asks: irrespective of the overall expression of a gene, is the fraction of a particular transcript changing? This is the main focus of `IsoformSwitchAnalyzeR`.
-- **Switch analysis** asks: Are there cases where the decrease or increase of a transcript is compensated by an increase or decrease of another transcript from the same gene? This is also an important feature of `IsoformSwitchAnalyzeR`.
-
-The DTU and switch pipeline can be complemented with an analysis of the functional consequences of the isoform switches. This is also an important feature of `IsoformSwitchAnalyzeR`. It allows to predict the functional consequences of the isoform switches based on the changes in the protein domains
-
-::: {.alert .alert-success role="alert"}
-In the context of `IsoformSwitchAnalyzeR` and the Brignall dataset, we will focus on the DTU analysis which is the main focus of the package. The DGE and DTE analyses can be performed using other packages (such as DESeq2).
-
-One of the most used ways of descripting isoform usage is as Isoform Fractions (IF). These are simply values describing how large a fraction of the expression of a given gene originate from a given isoform. So the Isoform Fraction of isoform x for gene g ($IF_{x,g}$) is given by :
-
-$$IF_{x,g} = IsoExp_{x,g} / GeneExp_{g}$$
-
-Note that the parent gene expression is the sum of the expression of all the associated isoforms. The difference between two conditions, condition 1 and 2, is then given by :
-
-$$dIF_{x,g} = IF_{x,g,condition1} - IF_{x,g,condition2}$$
-
-There are several methods that will use these dIF values to test for significant changes in isoform usage: DEXSeq, Double-ExpSeq, DRIMSeq, Limma diffsplice, edgeR diffsplice, NBSplice or BANDITS. Here we will use DEXSeq.
-
-Here we will use `DEXSeq` to perform the DTU analysis. The `isoformSwitchTestDEXSeq()` function in `IsoformSwitchAnalyzeR` is a wrapper around the `DEXSeq` package that allows us to perform the DTU analysis using DEXSeq.
-:::
 
 # Loading libraries
 
@@ -771,7 +740,7 @@ ggplot(data = aSwitchList_dex_ann$isoformFeatures,
                   -log10(isoform_switch_q_value) > 30 &
                   abs(dIF) > 0.05),
     aes(label = paste0(gene_id, "\n", isoform_id)),
-    size = 1.5,
+    size = 1.3,
     box.padding = 0.3,
     point.padding = 0.5,
     segment.color = 'grey50',
@@ -898,11 +867,11 @@ ggplot(data=data_tmp,
     ggrepel::geom_label_repel(
     data = subset(data_tmp, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30), 
     aes(label = paste0(gene_id, "\n", isoform_id), fill=direction),
-    size = 1.5,
+    size = 1.2,
     box.padding = 0.3,
     point.padding = 0.5,
     segment.color = 'grey50',
-    max.overlaps = 20
+    max.overlaps = 30
   )  +
   facet_wrap(~comparison) +
   scale_fill_manual(values=c("Up"="salmon", "Down"="lightgreen", "No change"="white"))
