@@ -1137,7 +1137,7 @@ IsoformSwitchAnalyzeR::switchPlot(
 
 We can check the results of the DEXSeq analysis (i.e significant DTU as shown by the significant  gene_switch_q_value). Here for PMA+Ionomycine condition. Only top 20 gene names (according to -log10(gene_switch_q_value)) are displayed. ATP2C1 is ranked 17th.
 
-```{r dexsummary2_gene_1a, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+```{r dexsummary2_gene_1a, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 6, fig.height=4}
 data_tmp <- aSwitchList_dex_ann_seq_pfam_pred$isoformFeatures %>% 
          dplyr::mutate(signif=-log10(gene_switch_q_value) > 3) %>% 
         dplyr::select(condition_1, condition_2, gene_id, gene_switch_q_value, signif, gene_log2_fold_change) %>%
@@ -1326,7 +1326,7 @@ DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames =
 
 ### DTE: PMA + Ionomycine
 
-The DTE is computed with DESeq2. The trnscripts that are displayed should have an IF (Isoform Fraction) greater than 0.025 in at least one of the two conditions.
+The DTE is computed with DESeq2. The transcripts that are displayed should have an IF (Isoform Fraction) greater than 0.025 in at least one of the two conditions.
 
 ```{r dte_pma, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
 tx_to_show <- unique(aSwitchList$isoformFeatures$isoform_id[aSwitchList$isoformFeatures$gene_id == "ATP2C1" & aSwitchList$isoformFeatures$IF_overall > 0.025])
@@ -1344,7 +1344,6 @@ tx_norm[itersect_tx_id, ] %>%
 
 counts <- round(tx_norm_tmp, 0)
 counts <- counts + 1
-
 
 mean_cont <- rowMeans(counts[, tmp_design$condition == cont_condition])
 names(mean_cont) <- rownames(counts)
@@ -1418,8 +1417,11 @@ data_text <- df %>% group_by(isoform_id) %>%
   as.data.frame()
 
 df$isoform_id <- factor(df$isoform_id, ordered = TRUE, levels = tx_to_show)
+df$condition <- factor(df$condition, ordered = TRUE, levels = c(cont_condition, stim_condition))
 
-plot_texp <- ggplot(df, aes(x=isoform_id, y=means, fill=condition)) +
+df_tx <- df
+
+plot_texp <- ggplot(df_tx, aes(x=isoform_id, y=means, fill=condition)) +
     geom_col(position="dodge") +
     geom_errorbar(
       aes(ymin = means - sem, ymax = means + sem),
@@ -1576,11 +1578,13 @@ plot_tx <- plot_tx + theme(title = element_blank())
 plot_tx + plot_gexp  + plot_usage + plot_texp + plot_layout(design = design_2) 
 ```
 
+Information about transcript expression and stats
+
+```{r}
+DT::datatable(df_tx, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
 ### DTE: CD3+CD28
-
-
-The DTE is computed with DESeq2. 
-
 
 The DTE is computed with DESeq2. The transcripts that are displayed should have an IF (Isoform Fraction) greater than 0.025 in at least one of conditions.
 
@@ -1675,8 +1679,10 @@ data_text <- df %>% group_by(isoform_id) %>%
   dplyr::filter(condition == cont_condition) %>%
   as.data.frame()
 
-df$isoform_id <- factor(data_text$isoform_id, ordered = TRUE, levels = tx_to_show)
+df$isoform_id <- factor(df$isoform_id, ordered = TRUE, levels = tx_to_show)
 df$condition <- factor(df$condition, ordered = TRUE, levels = c(cont_condition, stim_condition))
+
+df_tx <- df
 
 plot_texp <- ggplot(df, aes(x=isoform_id, y=means, fill=condition)) +
     geom_col(position="dodge") +
@@ -1810,6 +1816,11 @@ plot_tx <- switchPlotTranscript(aSwitchList_dex_ann_seq_pfam_pred, isoform_id = 
 plot_tx + plot_gexp  + plot_usage + plot_texp  + plot_layout(design = design_2) 
 ```
 
+Information about transcript expression and stats
+
+```{r}
+DT::datatable(df_tx, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
 
 # Session info
 
