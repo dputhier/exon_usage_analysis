@@ -71,6 +71,10 @@ library(ggsci)
 library(DT)
 library(sessioninfo)
 library(data.table)
+library(ROTS)
+library(patchwork)
+library(magrittr)
+library(Seurat)
 ```
 
 # Merging GSE285832 and GSE90718
@@ -88,11 +92,6 @@ The GSE285832 file contains **TWO REPLICATES** per condition...
 cmd <- "head -n 1 ../data/RNA_Wang_GSE285832_transcripts_counts.csv | perl -npe 's/,/\\n/g'| grep Jurkat"
 system(cmd)
 ```
-
-<div class="alert alert-danger" role="alert">
-This means that **the power of the analyses for the two datasets wont be the same**... We may select only two samples GSE90718 per condition to have the same number of replicates as GSE285832 but this will reduce the power of the analysis. We will thus keep all the samples from GSE90718 and just be aware that the power of the analysis is not the same for all conditions.
-</div>
-
 
 ## Loading GSE90718
 
@@ -144,6 +143,16 @@ colnames(tx_raw) <- gsub("_RNA", "", colnames(tx_raw))
 colnames(tx_raw) <- gsub("Jurkat.", "", colnames(tx_raw))
 ```
 
+# Select sample of interest
+
+Here we will focus on : NS, Cont, CD3andCD28, PMAandIono conditions. We will thus subset the count table to keep only these samples.
+
+```{r subset, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+
+tx_raw <- tx_raw[, grep("(Cont)|(CD3andCD28)|(PMAandIono)|(NS)|^(?!.*GSM)", colnames(tx_raw), perl=TRUE, val=TRUE)]
+```
+
+
 # Extract the transcript counts from the transcript table
 
 We next want to compute a normalized expression matrix for both the gene counts and the transcript counts. We thus need to create a dedicated matrix.
@@ -160,7 +169,6 @@ Transcript counts are not integer. This is a problem for later normalization wit
 ```{r rounding, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
 tx_counts  <- round(tx_counts, 0)
 ```
-
 
 
 # Compare GTF with tx list
@@ -371,13 +379,9 @@ if("tx_size" %in% colnames(tx_rpkm)){
 tx_rpkm$isoform_id <- rownames(tx_norm)
 
 cmp_to_make <- data.frame(condition_2 = c("CD3andCD28", 
-                                          "PMAandIono", 
-                                          "TNFAlone",
-                                          "IonoAlone",
-                                          "PMAAlone"),
+                                          "PMAandIono"),
                           condition_1 = c("Cont", 
-                                          "NS", "NS",
-                                          "NS", "NS"))
+                                          "NS"))
 
 print(getwd())
 
@@ -420,7 +424,7 @@ cmp_to_make
 
 By using `preFilter()` it is possible to remove genes and isoforms from all aspects of the switchAnalyzeRlist by filtering on:
 
--   geneExpressionCutoff, isoformExpressionCutoff, IFcutoff, acceptedGeneBiotype, acceptedIsoformClassCode, removeSingleIsoformGenes, reduceToSwitchingGenes, reduceFurtherToGenesWithConsequencePotential, onlySigIsoforms, keepIsoformInAllConditions, alpha, dIFcutoff
+- geneExpressionCutoff, isoformExpressionCutoff, IFcutoff, acceptedGeneBiotype, acceptedIsoformClassCode, removeSingleIsoformGenes, reduceToSwitchingGenes, reduceFurtherToGenesWithConsequencePotential, onlySigIsoforms, keepIsoformInAllConditions, alpha, dIFcutoff
 
 Some of these criteria will be explained later.
 
@@ -500,6 +504,8 @@ summary_switch_dex <- extractSwitchSummary(aSwitchList_dex,
                                        dIFcutoff = 0.075)
 summary_switch_dex
 ```
+
+
 
 # DEXseq analysis summary
 
@@ -629,7 +635,7 @@ saveRDS(aSwitchList_dex_ann, "../output/aSwitchList_dex_ann.rds")
 }else{
   aSwitchList_dex_ann <- readRDS("../output/aSwitchList_dex_ann.rds")
 }
-rm(aSwitchList_dex)
+
 ```
 
 
@@ -712,11 +718,12 @@ out <- extractSplicingEnrichmentComparison(
 ```
 
 
+
 # Plotting summary of DEXseq analysis
 
 Since all the data about isoform and gene expression is saved in the switchAnalyzeRlist, we can also start building some summarizing plots. For instance a volcano plot:
 
-```{r plotdexsummary2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+```{r plotdexsummary2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
 aSwitchList_dex_ann$isoformFeatures <- aSwitchList_dex_ann$isoformFeatures %>% 
   dplyr::mutate(comparison=paste0(condition_1, "vs", condition_2))
 
@@ -740,7 +747,7 @@ ggplot(data = aSwitchList_dex_ann$isoformFeatures,
                   -log10(isoform_switch_q_value) > 30 &
                   abs(dIF) > 0.05),
     aes(label = paste0(gene_id, "\n", isoform_id)),
-    size = 1.3,
+    size = 2.5,
     box.padding = 0.3,
     point.padding = 0.5,
     segment.color = 'grey50',
@@ -754,7 +761,7 @@ ggplot(data = aSwitchList_dex_ann$isoformFeatures,
 Below, we select the top 10 ranked genes based on the isoform_switch_q_value (alpha) for each comparison (with positive dIF >= 0.075). 
 We can see that ATP2C1 is ranked 2nd in the comparison between CD3 and CD28 vs control.
 
-```{r rankAT2P2C1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+```{r rankAT2P2C1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
 aSwitchList_dex_ann$isoformFeatures %>%
     dplyr::filter(dIF > 0) %>%
     dplyr::group_by(comparison, gene_id) %>%
@@ -771,7 +778,7 @@ DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames =
 
 Below, we select the top 10 ranked genes based on the isoform_switch_q_value for each comparison (with negative dIF). **Here ATP2C1 does not appear has none of its isoforms has a significant negative dIF.** 
 
-```{r rankAT2P2C1_2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+```{r rankAT2P2C1_2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
 aSwitchList_dex_ann$isoformFeatures %>%
     dplyr::filter(dIF < 0) %>%
     dplyr::group_by(comparison, gene_id) %>%
@@ -788,7 +795,7 @@ DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames =
 
 Here are the switching pairs of ATP2C1 isoforms. Again note that both pairs of a switch should have abs(dIF) > 0.075 but only one of the isoforms in a pair needs to be significantly differentially used (alpha < 0.05). Here we thus set alpha  to 1 and retrieve a limited number of isoforms.
 
-```{r getinfoiso, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+```{r getinfoiso, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
 # Get info about isoforms that are switching for ATP2C1
 DT::datatable(IsoformSwitchAnalyzeR:::extractSwitchPairs(aSwitchList_dex_ann, 
                                            alpha = 1, 
@@ -798,7 +805,7 @@ DT::datatable(IsoformSwitchAnalyzeR:::extractSwitchPairs(aSwitchList_dex_ann,
 
 Get informations about the isoform. Note that we add a column **Significant** to put emphasis on the isoforms that are **significantly differentially used (alpha < 0.05) and have abs(dIF) > 0.075**. We can see that only two isoforms with positive dIF are significantly differentially used (based on DEXseq text).
 
-```{r extractSwitchPairs, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+```{r extractSwitchPairs, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
 IsoformSwitchAnalyzeR:::extractSwitchPairs(aSwitchList_dex_ann, 
                                            alpha = 1, dIFcutoff = 0.075) %>% 
   dplyr::filter(gene_name=="ATP2C1") %>% 
@@ -836,7 +843,7 @@ ggplot(data=aSwitchList_dex_ann$isoformFeatures,
     ggrepel::geom_label_repel(
     data = subset(aSwitchList_dex_ann$isoformFeatures, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30), 
     aes(label = paste0(gene_id, "\n", isoform_id)),
-    size = 1.5,
+    size = 2.5,
     box.padding = 0.3,
     point.padding = 0.5,
     segment.color = 'grey50',
@@ -867,7 +874,7 @@ ggplot(data=data_tmp,
     ggrepel::geom_label_repel(
     data = subset(data_tmp, abs(dIF) > 0.05 & -log10(isoform_switch_q_value) > 30), 
     aes(label = paste0(gene_id, "\n", isoform_id), fill=direction),
-    size = 1.2,
+    size = 2.5,
     box.padding = 0.3,
     point.padding = 0.5,
     segment.color = 'grey50',
@@ -906,7 +913,7 @@ if(!file.exists("../output/aSwitchList_dex_ann_seq.rds")){
   aSwitchList_dex_ann_seq <- readRDS("../output/aSwitchList_dex_ann_seq.rds")
 }
 
-rm(aSwitchList_dex_ann)
+
 ```
 
 
@@ -947,7 +954,6 @@ if(!file.exists("../output/aSwitchList_dex_ann_seq_pfam.rds")){
   aSwitchList_dex_ann_seq_pfam <- readRDS("../output/aSwitchList_dex_ann_seq_pfam.rds")
 }
 
-rm(aSwitchList_dex_ann_seq)
   
 ```
 
@@ -1121,6 +1127,689 @@ IsoformSwitchAnalyzeR::switchPlot(
     condition2 = "PMAandIono",
     dIFcutoff = 0.075)
 ```
+
+
+# Figures
+
+##  Plotting summary of DEXseq analysis (Gene level)
+
+### PMA+Ionomycine
+
+We can check the results of the DEXSeq analysis (i.e significant DTU as shown by the significant  gene_switch_q_value). Here for PMA+Ionomycine condition. Only top 20 gene names (according to -log10(gene_switch_q_value)) are displayed. ATP2C1 is ranked 17th.
+
+```{r dexsummary2_gene_1a, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+data_tmp <- aSwitchList_dex_ann_seq_pfam_pred$isoformFeatures %>% 
+         dplyr::mutate(signif=-log10(gene_switch_q_value) > 3) %>% 
+        dplyr::select(condition_1, condition_2, gene_id, gene_switch_q_value, signif, gene_log2_fold_change) %>%
+        dplyr::distinct() %>% 
+        dplyr::mutate(Fold_Change=ifelse(gene_log2_fold_change > 0, "Gene is induced", "Gene is repressed")) %>%
+        dplyr::mutate(comparison=paste0(condition_1, "vs", condition_2)) %>%
+        dplyr::mutate(comparison = dplyr::recode_factor(comparison, "NSvsTNFAlone" = "TNF",
+                                              "NSvsIonoAlone" = "Ionomycine",
+                                              "NSvsPMAAlone" = "PMA",
+                                              "NSvsPMAandIono" = "PMA+Ionomycine",
+                                              "ContvsCD3andCD28" = "CD3+CD28")) %>%
+      dplyr::filter(comparison %in% c("PMA+Ionomycine")) %>%
+      dplyr::arrange(gene_switch_q_value) %>%
+      dplyr::mutate(to_be_labeled = rank(gene_switch_q_value) <= 20)
+
+
+ggplot(data=data_tmp,
+       aes(y=-log10(gene_switch_q_value), 
+           x=rank(gene_switch_q_value))) +
+    geom_point(
+        aes(color=signif), 
+        size=1
+    ) + 
+    scale_color_manual('-log10(gene_switch_q_value) > 3', 
+                       values = c('grey','steelblue')) +
+    labs(x='Rank(gene_switch_q_value)', y='-log10(gene_switch_q_value)') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+      data = subset(data_tmp, to_be_labeled), 
+      aes(label = gene_id, fill=Fold_Change),
+      size = 2.5,
+      box.padding = 0.3,
+      point.padding = 0.5,
+      segment.color = 'grey50',
+      max.overlaps = 50
+  )  +
+  facet_wrap(~comparison) +
+  scale_fill_manual(values=c("Gene is induced"="salmon", "Gene is repressed"="lightgreen", "No change"="white"))  
+```
+
+Below the list of corresponding genes as a table. ATP2C1 is ranked 17th.
+
+```{r dexsummary2_gene_tb_3, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 6, fig.height=4}
+tmp <- data_tmp %>% dplyr::filter(-log10(gene_switch_q_value) > 3) 
+tmp$rank <- rank(tmp$gene_switch_q_value)
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
+
+We can plot the same only with the genes that have a **positive Log2 fold change** (i.e. genes that are induced). ATP2C1 is ranked 14th.  Only top 15 gene names (according to -log10(gene_switch_q_value)) are displayed. 
+
+
+```{r dexsummary2_gene_1_onlyPosa, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 6, fig.height=4}
+data_tmp <- data_tmp[data_tmp$gene_log2_fold_change > 0, ]
+data_tmp$rank <- rank(x = data_tmp$gene_switch_q_value)
+data_tmp %<>% dplyr::mutate(to_be_labeled = rank(gene_switch_q_value) <= 15)
+
+ggplot(data_tmp,
+       aes(y=-log10(gene_switch_q_value), 
+           x=rank(gene_switch_q_value))) +
+    geom_point(
+        aes(color=signif), 
+        size=1
+    ) + 
+    scale_color_manual('-log10(gene_switch_q_value) > 3', 
+                       values = c('grey','steelblue')) +
+    labs(x='Rank(gene_switch_q_value)', y='-log10(gene_switch_q_value)') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+      data = subset(data_tmp, to_be_labeled), 
+      aes(label = gene_id),
+      size = 2.5,
+      box.padding = 0.3,
+      point.padding = 0.5,
+      segment.color = 'grey50',
+      max.overlaps = 50,
+      fill="grey90"
+  )  +
+  facet_wrap(~comparison) 
+```
+
+Below the list of corresponding genes as a table. ATP2C1 is ranked 14th.
+
+```{r dexsummary2_gene_tb_2, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+
+tmp <- data_tmp %>% dplyr::filter(-log10(gene_switch_q_value) > 3) 
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
+### CD3+CD28
+
+We can check the results of the DEXSeq analysis (i.e significant DTU as shown by the significant  gene_switch_q_value). Here for CD3+CD28 condition. Only top 20 gene names (according to -log10(gene_switch_q_value)) are displayed. ATP2C1 is ranked 2nd.
+
+```{r dexsummary2_gene_1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 6, fig.height=4}
+data_tmp <- aSwitchList_dex_ann_seq_pfam_pred$isoformFeatures %>% 
+         dplyr::mutate(signif=-log10(gene_switch_q_value) > 3) %>% 
+        dplyr::select(condition_1, condition_2, gene_id, gene_switch_q_value, signif, gene_log2_fold_change) %>%
+        dplyr::distinct() %>% 
+        dplyr::mutate(Fold_Change=ifelse(gene_log2_fold_change > 0, "Gene is induced", "Gene is repressed")) %>%
+        dplyr::mutate(comparison=paste0(condition_1, "vs", condition_2)) %>%
+        dplyr::mutate(comparison = dplyr::recode_factor(comparison, "NSvsTNFAlone" = "TNF",
+                                              "NSvsIonoAlone" = "Ionomycine",
+                                              "NSvsPMAAlone" = "PMA",
+                                              "NSvsPMAandIono" = "PMA+Ionomycine",
+                                              "ContvsCD3andCD28" = "CD3+CD28")) %>%
+      dplyr::filter(comparison %in% c("CD3+CD28")) %>%
+      dplyr::arrange(gene_switch_q_value) %>%
+      dplyr::mutate(to_be_labeled = rank(gene_switch_q_value) <= 20)
+
+
+ggplot(data=data_tmp,
+       aes(y=-log10(gene_switch_q_value), 
+           x=rank(gene_switch_q_value))) +
+    geom_point(
+        aes(color=signif), 
+        size=1
+    ) + 
+    scale_color_manual('-log10(gene_switch_q_value) > 3', 
+                       values = c('grey','steelblue')) +
+    labs(x='Rank(gene_switch_q_value)', y='-log10(gene_switch_q_value)') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+      data = subset(data_tmp, to_be_labeled), 
+      aes(label = gene_id, fill=Fold_Change),
+      size = 2.5,
+      box.padding = 0.3,
+      point.padding = 0.5,
+      segment.color = 'grey50',
+      max.overlaps = 50
+  )  +
+  facet_wrap(~comparison) +
+  scale_fill_manual(values=c("Gene is induced"="salmon", "Gene is repressed"="lightgreen", "No change"="white"))  
+```
+
+Below the list of corresponding genes as a table. ATP2C1 is ranked 2nd
+
+```{r dexsummary2_gene_tb_1, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE}
+tmp <- data_tmp %>% dplyr::filter(-log10(gene_switch_q_value) > 3) 
+tmp$rank <- rank(tmp$gene_switch_q_value)
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
+
+We can plot the same only with the genes that have a **positive Log2 fold change** (i.e. genes that are induced). ATP2C1 is ranked 2nd.  Only top 15 gene names (according to -log10(gene_switch_q_value)) are displayed. 
+
+
+```{r dexsummary2_gene_1_onlyPos, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 6, fig.height=4}
+data_tmp <- data_tmp[data_tmp$gene_log2_fold_change > 0, ]
+data_tmp$rank <- rank(x = data_tmp$gene_switch_q_value)
+data_tmp %<>% dplyr::mutate(to_be_labeled = rank(gene_switch_q_value) <= 15)
+
+ggplot(data_tmp,
+       aes(y=-log10(gene_switch_q_value), 
+           x=rank(gene_switch_q_value))) +
+    geom_point(
+        aes(color=signif), 
+        size=1
+    ) + 
+    scale_color_manual('-log10(gene_switch_q_value) > 3', 
+                       values = c('grey','steelblue')) +
+    labs(x='Rank(gene_switch_q_value)', y='-log10(gene_switch_q_value)') +
+    theme_bw() +
+    ggrepel::geom_label_repel(
+      data = subset(data_tmp, to_be_labeled), 
+      aes(label = gene_id),
+      size = 2.5,
+      box.padding = 0.3,
+      point.padding = 0.5,
+      segment.color = 'grey50',
+      max.overlaps = 50,
+      fill="grey90"
+  )  +
+  facet_wrap(~comparison) 
+```
+
+Below the list of corresponding genes as a table. ATP2C1 is ranked 2nd.
+
+```{r dexsummary2_gene_tb_4, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+
+tmp <- data_tmp %>% dplyr::filter(-log10(gene_switch_q_value) > 3) 
+DT::datatable(tmp, options = list(pageLength = 10, autoWidth = TRUE), rownames = FALSE)
+```
+
+
+## Transcript differential expression (DTE) 
+
+### DTE: PMA + Ionomycine
+
+The DTE is computed with DESeq2. The trnscripts that are displayed should have an IF (Isoform Fraction) greater than 0.025 in at least one of the two conditions.
+
+```{r dte_pma, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+tx_to_show <- unique(aSwitchList$isoformFeatures$isoform_id[aSwitchList$isoformFeatures$gene_id == "ATP2C1" & aSwitchList$isoformFeatures$IF_overall > 0.025])
+
+cont_condition <- "NS"
+stim_condition <- "PMAandIono"
+
+myDesign %>% 
+  dplyr::filter(condition %in% c(cont_condition, stim_condition)) -> tmp_design
+
+tx_norm[itersect_tx_id, ] %>% 
+  as.data.frame() %>% 
+  dplyr::select(all_of(tmp_design$sampleID)) -> tx_norm_tmp
+
+
+counts <- round(tx_norm_tmp, 0)
+counts <- counts + 1
+
+
+mean_cont <- rowMeans(counts[, tmp_design$condition == cont_condition])
+names(mean_cont) <- rownames(counts)
+mean_stim <- rowMeans(counts[, tmp_design$condition == stim_condition])
+names(mean_stim) <- rownames(counts)
+
+sd_cont <- apply(counts[, tmp_design$condition == cont_condition], 1, sd)
+names(sd_cont) <- rownames(counts)
+sd_stim <- apply(counts[, tmp_design$condition == stim_condition], 1, sd)
+names(sd_stim) <- rownames(counts)
+
+
+des <- DESeq2::DESeqDataSetFromMatrix(countData = counts, 
+                                      colData = tmp_design, 
+                                      design = ~ condition)
+
+des <- DESeq2::estimateSizeFactors(des)
+des <- DESeq2::estimateDispersions(des, fit="local")
+des <- DESeq2::nbinomWaldTest(des)
+
+DESeq2::results(des, contrast = c("condition", 
+                                  stim_condition, 
+                                  cont_condition), 
+                cooksCutoff=FALSE) %>% 
+        as.data.frame() %>% 
+        dplyr::mutate(isoform_id = rownames(.)) %>% 
+        dplyr::select(isoform_id, baseMean, log2FoldChange, pvalue, padj) %>% 
+        dplyr::arrange(padj) -> res_deseq2
+
+p <- switchPlotIsoExp(aSwitchList_dex_ann_seq_pfam_pred, 
+                 gene = "ATP2C1", 
+                 condition1 = cont_condition, 
+                 condition2 = stim_condition)
+
+
+df <- data.frame(isoform_id = rep(tx_to_show, 2),
+                 means = c(mean_cont[tx_to_show], mean_stim[tx_to_show]),
+                 sd = c(sd_cont[tx_to_show], sd_stim[tx_to_show]),
+                 condition = rep(c(cont_condition, stim_condition), each = length(tx_to_show)),
+                 padj=rep(res_deseq2[tx_to_show, ]$padj, 2),
+                 log2FoldChange=rep(res_deseq2[tx_to_show, ]$log2FoldChange, 2),
+                 pvalue=rep(res_deseq2[tx_to_show, ]$pvalue, 2)
+                 ) 
+
+df$sem <- df$sd / sqrt(3) # 3 replicates per condition
+
+df$padj[is.na(x = df$padj)] <- 1
+df$significant <- df$padj < 0.05
+
+evalSig <- function(pValue, alphas) {
+    sapply(pValue, function(x) {
+        if (is.na(x)) {
+            return('NA')
+        } else if (x < min(alphas)) {
+            sigLevel <- '***'
+        } else if (x < max(alphas)) {
+            sigLevel <- '*'
+        } else {
+            sigLevel <- 'ns'
+        }
+        return(sigLevel)
+    })
+}
+
+df$sigLevel <- evalSig(df$padj, alphas = c(0.05, 0.001))            
+df$label_y <- df$means + df$sem + 100
+
+data_text <- df %>% group_by(isoform_id) %>% 
+  mutate(max_label_bar = max(means + sem + 100)) %>%
+  dplyr::filter(condition == cont_condition) %>%
+  as.data.frame()
+
+df$isoform_id <- factor(df$isoform_id, ordered = TRUE, levels = tx_to_show)
+
+plot_texp <- ggplot(df, aes(x=isoform_id, y=means, fill=condition)) +
+    geom_col(position="dodge") +
+    geom_errorbar(
+      aes(ymin = means - sem, ymax = means + sem),
+      width = 0.25,
+      position = position_dodge(width = 0.9)) +
+    geom_text(data=data_text,
+      aes(y = max_label_bar, label = sigLevel, group = condition),
+      position = position_dodge(width = 0.9),
+      vjust = 0,
+      size = 4
+    ) +
+    geom_segment(data=data_text,
+    aes(
+      x = as.numeric(factor(isoform_id)) - 0.18,
+      xend = as.numeric(factor(isoform_id)) + 0.18,
+      y = max_label_bar - 10,
+      yend = max_label_bar - 10
+    )) + 
+      theme_bw() +
+    scale_fill_manual(values=setNames(c("darkgrey", "#333333"),
+                                        c(cont_condition, stim_condition)),
+                      labels = setNames(c("Control", "PMA + Ionomycin"),
+                                        c(cont_condition, stim_condition))) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+    labs(x='', y='Isoform Expression', fill="Condition") 
+
+plot_usage <- switchPlotIsoUsage(aSwitchList_dex_ann_seq_pfam_pred, 
+                 isoform_id = tx_to_show, 
+                 condition1 = "NS", 
+                 condition2 = "PMAandIono")
+  
+plot_usage_data <- plot_usage@data
+plot_usage_text <- plot_usage@layers$geom_text$data
+plot_usage_data %<>% 
+  left_join(y=plot_usage_text, by=c("isoform_id"), suffix=c("", ""))
+plot_usage_sgmt <- plot_usage@layers$geom_segment$data
+plot_usage_sgmt %<>% rename(ymaxsgt = ymax)
+plot_usage_data %<>% 
+  left_join(y=plot_usage_sgmt, by=c("isoform_id"), suffix=c("", ""))
+plot_usage_data_con <- plot_usage_data[plot_usage_data$Condition == cont_condition,]
+
+plot_usage$isoform_id <- factor(plot_usage$isoform_id, ordered = TRUE, levels = tx_to_show)
+
+
+plot_usage <- ggplot(plot_usage_data, aes(x=isoform_id, y=IF, fill=Condition)) +
+    geom_col(position="dodge") +
+  #   geom_text(data=plot_usage_data[plot_usage_data$Condition == cont_condition,], 
+  #             aes(y = ymax, label = sigEval, group = Condition),
+  #     position = position_dodge(width = 0.9),
+  #     vjust = 0,
+  #     size = 4
+  #   ) + 
+  # geom_segment(data=plot_usage_data[plot_usage_data$Condition == cont_condition,], 
+  #              aes(y=ymaxsgt - 0.005 , yend=ymaxsgt - 0.005,
+  #                  x=as.numeric(factor(isoform_id)) - 0.18,
+  #                  xend=as.numeric(factor(isoform_id)) + 0.18)) +
+     theme_bw() +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0),
+          legend.title = element_blank()) +
+    scale_fill_manual(values=setNames(c("darkgrey", "#333333"),
+                                        c(cont_condition, stim_condition)),
+                      labels = setNames(c("Control", "PMA + Ionomycin"),
+                                        c(cont_condition, stim_condition)))  +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  Seurat::NoLegend()  +
+  labs(x='', y='Isoform Fraction')
+  
+
+plot_gexp <- switchPlotGeneExp(aSwitchList_dex_ann_seq_pfam_pred, 
+                 gene = "ATP2C1", 
+                 condition1 = "NS", 
+                 condition2 = "PMAandIono") +
+    theme_bw() +
+    labs(x='Conditions', y='Gene Expression') 
+
+df <- plot_gexp@data
+df$text_x <- 1.5
+df$text_y <- max(df$CI_up) + 5
+df$sigEval <- "***"
+
+plot_gexp <- ggplot(df, aes(x = Condition, y = gene_expression, fill = Condition)) +
+    geom_col() +
+    geom_errorbar(aes(ymin = CI_down, ymax = CI_up), width=.25) +
+    geom_text(mapping=aes(x=text_x, y=text_y, label=sigEval), vjust=0, size=4) +
+    scale_fill_manual(values=setNames(c("darkgrey", "#333333"),
+                                        c(cont_condition, stim_condition)),
+                      labels = setNames(c("Control", "PMA + Ionomycin"),
+                                        c(cont_condition, stim_condition))) +
+    theme_bw() +
+  theme(axis.text.x = element_text(size = 11,  angle = -45, hjust = 0),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        legend.text = element_text(size = 12),
+        title = element_blank()) +
+    labs(x='', y='Gene Expression') +
+  Seurat::NoLegend()
+
+plot_tx <- switchPlotTranscript(aSwitchList_dex, isoform_id = tx_to_show)
+
+plot_tx <- plot_tx + theme(title = element_blank())
+
+design <- "AAAAAAAA
+           AAAAAAAA
+           AAAAAAAA
+           AAAAAAAA
+           AAAAAAAA
+           BBCCCCCC
+           BBCCCCCC
+           BBCCCCCC
+           BBCCCCCC
+           BBCCCCCC
+           BBCCCCCC"
+
+plot_tx + plot_gexp  + plot_texp + plot_layout(design = design) 
+```
+
+Or with information on domains:
+
+
+```{r table_useda,  warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+plot_tx <- switchPlotTranscript(aSwitchList_dex_ann_seq_pfam_pred, isoform_id = tx_to_show)
+plot_tx <- plot_tx + theme(title = element_blank())
+plot_tx + plot_gexp  + plot_texp + plot_layout(design = design) 
+```
+
+Or with DTU informations (without domains)
+
+```{r table_usedc,  warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 12, fig.height=7.5}
+
+design_2 <- "AAAAAAAAAAA
+             AAAAAAAAAAA
+             AAAAAAAAAAA
+             AAAAAAAAAAA
+             AAAAAAAAAAA
+             BCCCCCDDDDD
+             BCCCCCDDDDD
+             BCCCCCDDDDD
+             BCCCCCDDDDD
+             BCCCCCDDDDD
+             BCCCCCDDDDD"
+
+plot_tx <- switchPlotTranscript(aSwitchList_dex, isoform_id = tx_to_show)
+plot_tx <- plot_tx + theme(title = element_blank())
+plot_tx + plot_gexp  + plot_usage + plot_texp + plot_layout(design = design_2) 
+```
+
+Or with DTU informations (with domains)
+
+```{r table_usedd,  warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 12, fig.height=7.5}
+
+plot_tx <- switchPlotTranscript(aSwitchList_dex_ann_seq_pfam_pred, isoform_id = tx_to_show)
+plot_tx <- plot_tx + theme(title = element_blank())
+plot_tx + plot_gexp  + plot_usage + plot_texp + plot_layout(design = design_2) 
+```
+
+### DTE: CD3+CD28
+
+
+The DTE is computed with DESeq2. 
+
+
+The DTE is computed with DESeq2. The transcripts that are displayed should have an IF (Isoform Fraction) greater than 0.025 in at least one of conditions.
+
+```{r dte_CD3CD28,  warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+tx_to_show <- unique(aSwitchList$isoformFeatures$isoform_id[aSwitchList$isoformFeatures$gene_id == "ATP2C1" & aSwitchList$isoformFeatures$IF_overall > 0.025])
+
+
+
+cont_condition <- "Cont"
+stim_condition <- "CD3andCD28"
+
+myDesign %>% 
+  dplyr::filter(condition %in% c(cont_condition, stim_condition)) -> tmp_design
+
+tx_norm[itersect_tx_id, ] %>% 
+  as.data.frame() %>% 
+  dplyr::select(all_of(tmp_design$sampleID)) -> tx_norm_tmp
+
+
+counts <- round(tx_norm_tmp, 0)
+counts <- counts + 1
+
+
+mean_cont <- rowMeans(counts[, tmp_design$condition == cont_condition])
+names(mean_cont) <- rownames(counts)
+mean_stim <- rowMeans(counts[, tmp_design$condition == stim_condition])
+names(mean_stim) <- rownames(counts)
+
+sd_cont <- apply(counts[, tmp_design$condition == cont_condition], 1, sd)
+names(sd_cont) <- rownames(counts)
+sd_stim <- apply(counts[, tmp_design$condition == stim_condition], 1, sd)
+names(sd_stim) <- rownames(counts)
+
+
+des <- DESeq2::DESeqDataSetFromMatrix(countData = counts, 
+                                      colData = tmp_design, 
+                                      design = ~ condition)
+
+des <- DESeq2::estimateSizeFactors(des)
+des <- DESeq2::estimateDispersions(des, fit="local")
+des <- DESeq2::nbinomWaldTest(des)
+
+DESeq2::results(des, contrast = c("condition", 
+                                  stim_condition, 
+                                  cont_condition), 
+                cooksCutoff=FALSE) %>% 
+        as.data.frame() %>% 
+        dplyr::mutate(isoform_id = rownames(.)) %>% 
+        dplyr::select(isoform_id, baseMean, log2FoldChange, pvalue, padj) %>% 
+        dplyr::arrange(padj) -> res_deseq2
+
+p <- switchPlotIsoExp(aSwitchList_dex_ann_seq_pfam_pred, 
+                 gene = "ATP2C1", 
+                 condition1 = cont_condition, 
+                 condition2 = stim_condition)
+
+
+df <- data.frame(isoform_id = rep(tx_to_show, 2),
+                 means = c(mean_cont[tx_to_show], mean_stim[tx_to_show]),
+                 sd = c(sd_cont[tx_to_show], sd_stim[tx_to_show]),
+                 condition = rep(c(cont_condition, stim_condition), each = length(tx_to_show)),
+                 padj=rep(res_deseq2[tx_to_show, ]$padj, 2),
+                 log2FoldChange=rep(res_deseq2[tx_to_show, ]$log2FoldChange, 2),
+                 pvalue=rep(res_deseq2[tx_to_show, ]$pvalue, 2)
+                 ) 
+
+df$sem <- df$sd / sqrt(3) # 3 replicates per condition
+
+df$padj[is.na(x = df$padj)] <- 1
+df$significant <- df$padj < 0.05
+
+evalSig <- function(pValue, alphas) {
+    sapply(pValue, function(x) {
+        if (is.na(x)) {
+            return('NA')
+        } else if (x < min(alphas)) {
+            sigLevel <- '***'
+        } else if (x < max(alphas)) {
+            sigLevel <- '*'
+        } else {
+            sigLevel <- 'ns'
+        }
+        return(sigLevel)
+    })
+}
+
+df$sigLevel <- evalSig(df$padj, alphas = c(0.05, 0.001))            
+df$label_y <- df$means + df$sem + 100
+
+data_text <- df %>% group_by(isoform_id) %>% 
+  mutate(max_label_bar = max(means + sem + 100)) %>%
+  dplyr::filter(condition == cont_condition) %>%
+  as.data.frame()
+
+df$isoform_id <- factor(data_text$isoform_id, ordered = TRUE, levels = tx_to_show)
+df$condition <- factor(df$condition, ordered = TRUE, levels = c(cont_condition, stim_condition))
+
+plot_texp <- ggplot(df, aes(x=isoform_id, y=means, fill=condition)) +
+    geom_col(position="dodge") +
+    geom_errorbar(
+      aes(ymin = means - sem, ymax = means + sem),
+      width = 0.25,
+      position = position_dodge(width = 0.9)) +
+    geom_text(data=data_text,
+      aes(y = max_label_bar, label = sigLevel, group = condition),
+      position = position_dodge(width = 0.9),
+      vjust = 0,
+      size = 4
+    ) +
+    geom_segment(data=data_text,
+    aes(
+      x = as.numeric(factor(isoform_id)) - 0.18,
+      xend = as.numeric(factor(isoform_id)) + 0.18,
+      y = max_label_bar - 10,
+      yend = max_label_bar - 10
+    )) + 
+      theme_bw() +
+    scale_fill_manual(values=setNames(c("darkgrey", "#333333"),
+                                        c(cont_condition, stim_condition)),
+                      labels = setNames(c("Control", "CD3+CD28"),
+                                        c(cont_condition, stim_condition))) +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+    labs(x='', y='Isoform Expression', fill="Condition") 
+
+plot_usage <- switchPlotIsoUsage(aSwitchList_dex_ann_seq_pfam_pred, 
+                 isoform_id = tx_to_show, 
+                 condition1 = "Cont", 
+                 condition2 = "CD3andCD28")
+  
+plot_usage_data <- plot_usage@data
+plot_usage_text <- plot_usage@layers$geom_text$data
+plot_usage_data %<>% 
+  left_join(y=plot_usage_text, by=c("isoform_id"), suffix=c("", ""))
+plot_usage_sgmt <- plot_usage@layers$geom_segment$data
+plot_usage_sgmt %<>% rename(ymaxsgt = ymax)
+plot_usage_data %<>% 
+  left_join(y=plot_usage_sgmt, by=c("isoform_id"), suffix=c("", ""))
+plot_usage_data_con <- plot_usage_data[plot_usage_data$Condition == cont_condition,]
+
+plot_usage$isoform_id <- factor(plot_usage$isoform_id, ordered = TRUE, levels = tx_to_show)
+
+plot_usage$Condition <- factor(plot_usage$Condition, ordered = TRUE, levels = c(cont_condition, stim_condition))
+
+plot_usage <- ggplot(plot_usage_data, aes(x=isoform_id, y=IF, fill=Condition)) +
+    geom_col(position="dodge") +
+  #   geom_text(data=plot_usage_data[plot_usage_data$Condition == cont_condition,], 
+  #             aes(y = ymax, label = sigEval, group = Condition),
+  #     position = position_dodge(width = 0.9),
+  #     vjust = 0,
+  #     size = 4
+  #   ) + 
+  # geom_segment(data=plot_usage_data[plot_usage_data$Condition == cont_condition,], 
+  #              aes(y=ymaxsgt - 0.005 , yend=ymaxsgt - 0.005,
+  #                  x=as.numeric(factor(isoform_id)) - 0.18,
+  #                  xend=as.numeric(factor(isoform_id)) + 0.18)) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0),
+          legend.title = element_blank()) +
+    scale_fill_manual(values=setNames(c("darkgrey", "#333333"),
+                                        c(cont_condition, stim_condition)),
+                      labels = setNames(c("Control", "PMA + Ionomycin"),
+                                        c(cont_condition, stim_condition)))  +
+    theme(axis.text.x = element_text(angle = -45, hjust = 0)) +
+  Seurat::NoLegend()  +
+  labs(x='', y='Isoform Fraction')
+  
+
+plot_gexp <- switchPlotGeneExp(aSwitchList_dex_ann_seq_pfam_pred, 
+                 gene = "ATP2C1", 
+                 condition1 = "Cont", 
+                 condition2 = "CD3andCD28") +
+    theme_bw() +
+    labs(x='Conditions', y='Gene Expression') 
+
+df <- plot_gexp@data
+df$text_x <- 1.5
+df$text_y <- max(df$CI_up) + 5
+df$sigEval <- "***"
+
+plot_gexp <- ggplot(df, aes(x = Condition, y = gene_expression, fill = Condition)) +
+    geom_col() +
+    geom_errorbar(aes(ymin = CI_down, ymax = CI_up), width=.25) +
+    geom_text(mapping=aes(x=text_x, y=text_y, label=sigEval), vjust=0, size=4) +
+    scale_fill_manual(values=setNames(c("darkgrey", "#333333"),
+                                        c(cont_condition, stim_condition)),
+                      labels = setNames(c("Control", "CD3 + CD28"),
+                                        c(cont_condition, stim_condition))) +
+    theme_bw() +
+  theme(axis.text.x = element_text(size = 11,  angle = -45, hjust = 0),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        legend.text = element_text(size = 12),
+        title = element_blank()) +
+    labs(x='', y='Gene Expression') +
+  Seurat::NoLegend()
+
+plot_tx <- switchPlotTranscript(aSwitchList_dex, isoform_id = tx_to_show)
+
+plot_tx + plot_gexp  + plot_texp + plot_layout(design = design) 
+```
+
+Or with information on domains:
+
+
+```{r table_used, warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 10, fig.height=7.5}
+plot_tx <- switchPlotTranscript(aSwitchList_dex_ann_seq_pfam_pred, isoform_id = tx_to_show)
+plot_tx + plot_gexp  + plot_texp + plot_layout(design = design) 
+
+```
+
+
+Or with DTU informations (without domains)
+
+```{r table_usede,  warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 12, fig.height=7.5}
+
+
+plot_tx <- switchPlotTranscript(aSwitchList_dex, isoform_id = tx_to_show)
+plot_tx + plot_gexp  + plot_usage + plot_texp + plot_layout(design = design_2) 
+```
+
+Or with DTU informations (with domains)
+
+```{r table_usedf,  warning=FALSE, message=FALSE, echo=TRUE, suppressPackageStartupMessages=TRUE, fig.width= 12, fig.height=7.5}
+
+plot_tx <- switchPlotTranscript(aSwitchList_dex_ann_seq_pfam_pred, isoform_id = tx_to_show)
+plot_tx + plot_gexp  + plot_usage + plot_texp  + plot_layout(design = design_2) 
+```
+
 
 # Session info
 
